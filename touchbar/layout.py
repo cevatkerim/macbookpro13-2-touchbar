@@ -1,6 +1,7 @@
 """Layout and touch handling, independent of hardware and desktop commands."""
 from dataclasses import dataclass
 import math
+from preferences import DEFAULTS, validate
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class Layout:
         self.blocked = False
         self.pressed = None
         self.last_touch = 0
+        self.settings = validate(DEFAULTS)
 
     def items(self):
         if self.overlay:
@@ -36,8 +38,7 @@ class Layout:
         if self.state['locked'] and self.page not in ('volume','brightness','keyboard'):
             return self.distribute([('esc','esc','',1), ('status','Screen locked','',6),
                                     ('volume',self.level('volume'),'volume',2),
-                                    ('brightness',self.level('brightness'),'brightness',2),
-                                    ('stock','Default','back',1.5)])
+                                    ('brightness',self.level('brightness'),'brightness',2)])
         if self.page == 'workspaces':
             return self.distribute([('back', 'Back', 'back', 1)] +
                                    [(f'workspace:{i}', str(i), '', 1) for i in range(1, 11)])
@@ -51,16 +52,30 @@ class Layout:
                                     ('mute' if self.page == 'volume' else 'spacer',
                                      ('Unmute' if self.state['muted'] else 'Mute') if self.page == 'volume' else '',
                                      'volume' if self.page == 'volume' else '', 1.3),
-                                    ('spacer', '', '', 2), ('launcher', '', 'omarchy', 1.1),
-                                    ('stock', 'Default', 'back', 1.5)])
-        return self.distribute([
-            ('esc', 'esc', '', 0.85), ('launcher', '', 'omarchy', 1.05),
-            ('workspaces', str(self.state['workspace']), 'workspaces', 1.2),
-            ('screenshot', '', 'camera', 1), ('notifications', '', 'bell', 1),
-            ('previous', '', 'previous', 0.85), ('play', '', 'play', 0.85), ('next', '', 'next', 0.85),
-            ('volume', self.level('volume'), 'volume', 1.65),
-            ('brightness', self.level('brightness'), 'brightness', 1.65),
-            ('keyboard', '', 'keyboard', 1), ('stock', 'Default', 'back', 1.4)])
+                                    ('spacer', '', '', 3.5), ('launcher', '', 'omarchy', 1.1)])
+        shortcuts = {
+            'workspaces': ('workspaces', str(self.state['workspace']), 'workspaces', 1.2),
+            'screenshot': ('screenshot', '', 'camera', 1),
+            'notifications': ('notifications', '', 'bell', 1),
+        }
+        items = [('esc', 'esc', '', 0.85), ('launcher', '', 'omarchy', 1.05)]
+        items += [shortcuts[item['id']] for item in self.settings['shortcuts'] if item['visible']]
+        if self.settings['media']:
+            items += [('previous', '', 'previous', 0.85), ('play', '', 'play', 0.85), ('next', '', 'next', 0.85)]
+        items += [('volume', self.level('volume'), 'volume', 1.65),
+                  ('brightness', self.level('brightness'), 'brightness', 1.65)]
+        if self.settings['keyboard']:
+            items.append(('keyboard', '', 'keyboard', 1))
+        return self.distribute(items)
+
+    def configure(self, settings):
+        self.settings = validate(settings)
+        self.blocked = self.blocked or self.contact is not None
+        self.contact, self.pressed = None, None
+        if self.page == 'workspaces' and not next(item['visible'] for item in self.settings['shortcuts'] if item['id'] == 'workspaces'):
+            self.page = 'home'
+        if self.page == 'keyboard' and not self.settings['keyboard']:
+            self.page = 'home'
 
     def level(self, name):
         if name == 'volume' and self.state['muted']:

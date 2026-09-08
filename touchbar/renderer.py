@@ -12,6 +12,7 @@ import time
 from drawing import render
 from layout import Layout
 from protocol import Hardware
+from preferences import Preferences
 
 
 def overlay_state():
@@ -44,6 +45,13 @@ def main():
     parser.add_argument('--test-seconds', type=float, help='End the live renderer after this many seconds')
     args = parser.parse_args()
     layout = Layout()
+    preferences = Preferences()
+    settings_error = None
+    try:
+        layout.configure(preferences.load())
+    except (OSError, ValueError) as error:
+        settings_error = str(error)
+        print("Using default Touch Bar settings: " + settings_error, file=sys.stderr)
     if args.preview:
         layout.page = args.page
         layout.fn = args.page == 'fn'
@@ -75,6 +83,17 @@ def main():
         while running and (args.test_seconds is None or time.monotonic()-start < args.test_seconds):
             now = time.monotonic()
             if now >= next_status:
+                if layout.contact is None and not layout.blocked:
+                    try:
+                        settings = preferences.load()
+                        if settings != layout.settings:
+                            layout.configure(settings)
+                            dirty = True
+                        settings_error = None
+                    except (OSError, ValueError) as error:
+                        if str(error) != settings_error:
+                            settings_error = str(error)
+                            print('Keeping the last valid Touch Bar settings: ' + settings_error, file=sys.stderr)
                 overlay = overlay_state()
                 if overlay != layout.overlay:
                     layout.change_context(fn=layout.fn, overlay=overlay)
@@ -120,8 +139,7 @@ def main():
                             if name == 'volume': layout.state['muted'] = False
                         else:
                             name = action[1]
-                            if name == 'stock': running = False
-                            elif name == 'esc': hardware.tap(1)
+                            if name == 'esc': hardware.tap(1)
                             elif name.startswith('key:'):
                                 number = int(name.split(':')[1])
                                 hardware.tap(58+number if number <= 10 else 76+number)
