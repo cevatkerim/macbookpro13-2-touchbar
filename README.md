@@ -1,15 +1,18 @@
 # MacBookPro13,2 Touch Bar on Omarchy
 
-**Working Touch Bar icons and buttons, confirmed by the owner on 2026-09-08.**
+**Working Touch Bar, camera capture and Touch ID on 2026-09-08.**
 The test machine has a failed internal SSD and runs Omarchy from an external SSD.
-Its T1 was in recovery. Both provisioning passes and production boot succeeded;
-the driver and firmware files are installed for later boots. **Cold-boot
-persistence and suspend/resume remain unverified.**
+Its T1 was in recovery. Both provisioning passes and production boot succeeded.
+Touch ID now enrolls, verifies and unlocks through T1Bridge; the owner confirmed
+Touch Bar controls and volume/brightness OSD. Password fallback was tested.
+EFI staging alone did not survive reboot, so a saved-firmware startup service
+was added. **Its next-reboot behavior and suspend/resume remain unverified.**
 
 Audio is maintained separately in
 [macbookpro13-2-audio](https://github.com/cevatkerim/macbookpro13-2-audio).
-This repository contains only the T1 activation work, its tests and documentation,
-and an Arch/DKMS package definition for the existing community Touch Bar driver.
+This repository contains T1 activation work and tests, the original community
+driver packaging, and documentation and desktop integration for the subsequent
+T1Bridge Touch ID setup.
 
 ## Start here
 
@@ -17,8 +20,8 @@ and an Arch/DKMS package definition for the existing community Touch Bar driver.
   EmbeddedOS already boots. Includes automatic loading and kernel updates.
 - [FaceTime camera verification](camera.md): built-in UVC support, tested capture
   settings and OBS setup after T1 activation.
-- [Touch ID trial](touchid.md): T1Bridge packages staged for reboot; enrollment
-  and the new driver stack are not yet verified on this machine.
+- [Touch ID setup and results](touchid.md): verified enrollment and matching,
+  T1Bridge migration, desktop controls and saved-firmware startup.
 - [Full activation procedure](recovery/docs/activation.md): the tested recovery,
   FDR creation/replay, production boot, verification and EFI staging sequence.
 - [Results and limitations](recovery/README.md): live evidence and persistence status.
@@ -39,10 +42,11 @@ FDR memory commits and replay, plus 31 offline tests. Supporting patches add the
 T1 device entry, private USB discovery, verified HTTPS signing and a null-result
 fix for acpi_call. Native Apple code and live trials informed the protocol fixes.
 
-The kernel driver is the existing
+The original kernel driver was the existing
 [AJ-dev-i60/t1-touchbar fork](https://github.com/AJ-dev-i60/t1-touchbar/tree/20d65c7b0fe6d05ea9734f869b27384a62de5109),
 pinned and packaged for Omarchy/Arch. Its implementation was not written from
-scratch. Its ACPI power-call skip is explicitly enabled.
+scratch. Its ACPI power-call skip was explicitly enabled. The current
+[Touch ID setup](touchid.md) uses T1Bridge's packaged drivers and services instead.
 
 ## Tested result
 
@@ -52,13 +56,15 @@ scratch. Its ACPI power-call skip is explicitly enabled.
 | OS / kernel | Omarchy 4.0.2; 7.1.9-arch1-2 |
 | Firmware | Apple EmbeddedOS 3.0, build 14Y901 |
 | Provisioning | Both passes completed; replayed FDR data byte-identical |
-| Production USB | 35/35 one-second samples at 05ac:8600, four interfaces |
-| HID binding | Two physical iBridge HIDs and two virtual Touch Bar HIDs bound |
+| Production USB | Initially four interfaces; current T1Bridge configuration has eight |
+| Initial HID binding | Two physical iBridge HIDs and two virtual Touch Bar HIDs bound |
 | Display / buttons | Owner confirmed icons and working buttons |
-| Webcam | 720p/30 capture passed with built-in uvcvideo; owner confirmed OBS works |
-| Driver persistence | apple-ib-drv/0.1 installed through DKMS; boot image rebuilt |
-| Firmware persistence | Proven files staged on external SSD EFI and verified |
-| Cold boot / suspend | Not tested |
+| Webcam | 720p/30 MJPEG and H.264 capture passed; OBS confirmed on initial MJPEG stack |
+| Touch ID | Enrollment, matching, sudo, graphical authorization and lock-screen unlock passed |
+| Password fallback | Sudo, graphical authorization and lock screen tested with fprintd disabled |
+| Driver persistence | t1bridge-dkms/0.1.4 installed; selector included in boot image |
+| Firmware persistence | EFI-only boot failed; saved-image Linux startup installed, next reboot untested |
+| Suspend/resume | Not tested |
 
 A restore ramdisk also exposes 05ac:8600, with one mux interface. That USB ID
 alone does not establish production boot or a working Touch Bar. No host reboot

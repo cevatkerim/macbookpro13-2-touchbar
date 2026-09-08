@@ -1,0 +1,27 @@
+[Unit]
+Description=Boot previously verified Apple T1 firmware from saved local state
+After=local-fs.target systemd-modules-load.service systemd-udev-trigger.service
+Before=t1-touchbar-hw.service
+ConditionPathExists=/sys/module/t1_cfgsel
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/t1-firmware/boot-saved-t1.py
+RemainAfterExit=yes
+TimeoutStartSec=150
+TimeoutStopSec=10
+UMask=0077
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/t1-touchbar/private
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target

@@ -7,7 +7,7 @@ was needed. This model does not use the PCIe `facetimehd`/`bcwc_pcie` driver
 found in some other Macs. See the upstream
 [model-specific camera notes](https://github.com/Dunedan/mbp-2016-linux#facetime-hd-camera).
 
-## Verified on 2026-09-08
+## Initial configuration-1 test on 2026-09-08
 
 - MacBookPro13,2, Omarchy 4.0.2, kernel 7.1.9-arch1-2.
 - Production iBridge `05ac:8600`, USB configuration 1.
@@ -18,6 +18,18 @@ found in some other Macs. See the upstream
   no camera images or recordings were saved.
 - The owner confirmed the camera works in OBS after the capture test.
 - Cold boot and suspend/resume have not yet been tested.
+
+## T1Bridge configuration-2 test
+
+The subsequent [Touch ID setup](touchid.md) switched to T1Bridge's eight-interface
+configuration 2 and its packaged UVC driver. This configuration exposes **H.264**
+instead of MJPEG. FFmpeg decoded another 90 frames at 1280×720 and 30 fps,
+returning status 0. It emitted one initial duplicate-timestamp warning from the
+null output muxer; no decoder failure occurred. Frames were discarded.
+
+For this configuration, use `-input_format h264` in the command below and choose
+H.264 in a compatible application's camera settings. OBS preview has not yet
+been rechecked after this switch. The earlier OBS confirmation used MJPEG.
 
 ## Use in OBS
 
@@ -45,8 +57,8 @@ and decoding; use a local preview to assess the picture.
 
 ## Persistence
 
-Camera availability depends on the T1 booting production firmware. The existing
-[EFI staging and driver setup](driver/README.md) supplies that configuration;
-uvcvideo binds automatically when the camera enumerates. No separate camera
-startup service was added. If it disappears after a reboot, first check whether
-the T1 returned to recovery mode and follow the activation documentation.
+Camera availability depends on the T1 booting production firmware; the UVC
+driver binds when the camera enumerates. EFI staging alone did not persist
+production boot on this Mac. The [saved-firmware startup service](touchid.md#firmware-startup-after-reboot)
+now supplies the Linux startup path. Its next-reboot behavior remains unverified.
+No camera-specific startup service was added.

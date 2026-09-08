@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Unprivileged T1Bridge v1 audio/media adapter for Omarchy 4."""
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -22,6 +23,21 @@ def sink():
     return value
 
 
+def audio_state(output):
+    state = run('/usr/bin/pactl', 'get-sink-volume', output)
+    match = re.search(r'\b([0-9]+)%', state)
+    if match is None:
+        raise ValueError('invalid volume')
+    mute = run('/usr/bin/pactl', 'get-sink-mute', output).strip()
+    if mute not in ('Mute: yes', 'Mute: no'):
+        raise ValueError('invalid mute state')
+    return min(100, int(match[1])), mute == 'Mute: yes'
+
+
+def show_level(icon, value):
+    run(OMARCHY + 'omarchy-osd', '-i', icon, '-p', str(value))
+
+
 def main(args):
     if os.geteuid() == 0 or len(args) < 2 or args[0] != 'v1':
         return 2
@@ -35,22 +51,15 @@ def main(args):
         output = sink()
         run('/usr/bin/pactl', 'set-sink-volume', output, f'{volume}%')
         run('/usr/bin/pactl', 'set-sink-mute', output, '0')
+        show_level('volume-high' if volume else 'volume-muted', volume)
         return 0
     if extra:
         return 2
     if operation == 'status':
-        capabilities, volume, muted = 0, '-', '-'
+        capabilities, volume, muted = 8, '-', '-'
         try:
-            output = sink()
-            state = run('/usr/bin/pactl', 'get-sink-volume', output)
-            match = re.search(r'\b([0-9]+)%', state)
-            if match is None:
-                raise ValueError('invalid volume')
-            volume = str(min(100, int(match[1])))
-            mute = run('/usr/bin/pactl', 'get-sink-mute', output).strip()
-            if mute not in ('Mute: yes', 'Mute: no'):
-                raise ValueError('invalid mute state')
-            muted = '1' if mute == 'Mute: yes' else '0'
+            volume, is_muted = audio_state(sink())
+            muted = int(is_muted)
             capabilities |= 1
         except (ValueError, subprocess.SubprocessError, OSError):
             volume, muted = '-', '-'
@@ -63,7 +72,26 @@ def main(args):
         print(f'T1BRIDGE-DESKTOP 1 {capabilities} {volume} {muted}')
         return 0
     if operation == 'toggle-mute':
-        run('/usr/bin/pactl', 'set-sink-mute', sink(), 'toggle')
+        output = sink()
+        run('/usr/bin/pactl', 'set-sink-mute', output, 'toggle')
+        volume, muted = audio_state(output)
+        show_level('volume-muted' if muted or not volume else 'volume-high', volume)
+        return 0
+    if operation == 'show-display-brightness':
+        value = run(OMARCHY + 'omarchy-brightness-display').strip()
+        if not value.isdecimal() or not 0 <= int(value) <= 100:
+            return 1
+        show_level('brightness', value)
+        return 0
+    if operation == 'show-keyboard-backlight':
+        devices = list(Path('/sys/class/leds').glob('*kbd_backlight*'))
+        if len(devices) != 1:
+            return 1
+        current = int((devices[0] / 'brightness').read_text())
+        maximum = int((devices[0] / 'max_brightness').read_text())
+        if not 0 <= current <= maximum or maximum == 0:
+            return 1
+        show_level('keyboard', current * 100 // maximum)
         return 0
     media = {'media-previous': 'previous', 'media-play-pause': 'playPause',
              'media-next': 'next'}
