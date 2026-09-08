@@ -58,8 +58,9 @@ byte-identical FDR data from pass A. The exact saved pass-B image then booted in
 production mode; 35 of 35 one-second USB samples remained 05ac:8600 with four
 interfaces. Two physical HIDs bound to apple-ibridge-hid, two virtual Touch Bar
 HIDs bound to apple-touchbar, and webcam device nodes appeared. The owner
-confirmed visible icons and working buttons. Fn layout and webcam capture were
-not separately confirmed.
+confirmed visible icons and working buttons. A subsequent webcam test decoded
+90 frames at 1280×720 and 30 fps with built-in uvcvideo; see
+[camera verification](../camera.md). Fn layout remains unverified.
 
 Patch 0010 corrects bootstrap timing/flags, preserves the original ticket through
 iBEC, uses the separate restore-ramdisk/device-tree/kernel boot path, and keeps

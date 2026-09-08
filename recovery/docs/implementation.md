@@ -419,7 +419,9 @@ wrong embedded tickets and stopping after every failed transfer. Live sampling
 recorded 35/35 seconds as 05ac:8600 with four interfaces. Two physical HID devices
 bound to apple-ibridge-hid and two virtual 1d6b:0301 devices to apple-touchbar.
 The owner confirmed icons and working buttons. Webcam nodes video0/video1 are
-present, but camera capture and Fn layout were not separately verified.
+present. A subsequent test decoded 90 webcam frames at 1280×720 and 30 fps using
+the built-in uvcvideo driver, with exit status 0 and no decoding errors. See
+[camera verification](../../camera.md). Fn layout remains unverified.
 
 The driver source is pinned to AJ-dev-i60/t1-touchbar commit
 20d65c7b0fe6d05ea9734f869b27384a62de5109. The Arch package installed DKMS

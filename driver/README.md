@@ -75,9 +75,9 @@ journalctl -k --no-pager -g 'apple-ibridge|apple-touchbar|skip_acpi_power'
 
 Expected: DKMS says installed for the current kernel; physical `05ac:8600` HIDs
 use `apple-ibridge-hid`; virtual `1d6b:0301` HIDs use `apple-touchbar`. Confirm
-visible icons and a button press physically. Fn layout and webcam capture are
-useful additional checks; our owner confirmed icons/buttons, while webcam nodes
-were observed but capture was not tested.
+visible icons and a button press physically. Our owner confirmed icons/buttons;
+the webcam subsequently passed a 90-frame 720p/30 capture test using built-in
+uvcvideo. See [camera verification](../camera.md). Fn layout remains unverified.
 
 The temporary live test used `idle_timeout=-1` and `dim_timeout=-1` to keep the
 bar visible. The permanent package retains upstream defaults: the display can

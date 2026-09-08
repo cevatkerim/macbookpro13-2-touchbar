@@ -15,6 +15,8 @@ and an Arch/DKMS package definition for the existing community Touch Bar driver.
 
 - [Driver installation and removal](driver/README.md): use this when production
   EmbeddedOS already boots. Includes automatic loading and kernel updates.
+- [FaceTime camera verification](camera.md): built-in UVC support, tested capture
+  settings and OBS setup after T1 activation.
 - [Full activation procedure](recovery/docs/activation.md): the tested recovery,
   FDR creation/replay, production boot, verification and EFI staging sequence.
 - [Results and limitations](recovery/README.md): live evidence and persistence status.
@@ -51,7 +53,7 @@ scratch. Its ACPI power-call skip is explicitly enabled.
 | Production USB | 35/35 one-second samples at 05ac:8600, four interfaces |
 | HID binding | Two physical iBridge HIDs and two virtual Touch Bar HIDs bound |
 | Display / buttons | Owner confirmed icons and working buttons |
-| Webcam | Device nodes present; capture not tested |
+| Webcam | 720p/30 capture passed with built-in uvcvideo; owner confirmed OBS works |
 | Driver persistence | apple-ib-drv/0.1 installed through DKMS; boot image rebuilt |
 | Firmware persistence | Proven files staged on external SSD EFI and verified |
 | Cold boot / suspend | Not tested |
