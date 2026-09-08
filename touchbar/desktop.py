@@ -67,13 +67,19 @@ class Desktop:
         with self.condition:
             self.state.update(values)
 
+    def notifications_visible(self):
+        layers = json.loads(self.run(['hyprctl','layers','-j']))
+        return any(layer.get('namespace') == 'omarchy-notifications'
+                   for monitor in layers.values()
+                   for entries in monitor.get('levels',{}).values()
+                   for layer in entries)
+
     def execute(self, action, value):
         if action in ('launcher','notifications','workspace','screenshot'):
             if self.run(['omarchy-shell','lock','isLocked']).strip() != 'false':
                 return
         fixed = {
             'launcher': ['omarchy','menu','toggle'],
-            'notifications': ['omarchy-shell','notifications','showHistory'],
             'previous': [self.provider,'v1','media-previous'],
             'play': [self.provider,'v1','media-play-pause'],
             'next': [self.provider,'v1','media-next'],
@@ -81,7 +87,10 @@ class Desktop:
             'osd-brightness': [self.provider,'v1','show-display-brightness'],
             'osd-keyboard': [self.provider,'v1','show-keyboard-backlight'],
         }
-        if action == 'volume' and type(value) is int and 0 <= value <= 100:
+        if action == 'notifications':
+            method = 'dismissAll' if self.notifications_visible() else 'showHistory'
+            self.run(['omarchy-shell','notifications',method])
+        elif action == 'volume' and type(value) is int and 0 <= value <= 100:
             self.run([self.provider,'v1','set-volume',str(value)])
         elif action == 'workspace' and type(value) is int and 1 <= value <= 10:
             self.run(['hyprctl','dispatch',f'hl.dsp.focus({{ workspace = "{value}" }})'])

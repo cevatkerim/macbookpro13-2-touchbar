@@ -32,7 +32,7 @@ renderer service. The Touch Bar itself has no Default/exit button.
 | Omarchy icon | Opens/closes the Omarchy menu, including application launchers |
 | Workspace grid | Opens buttons for workspaces 1–10; the current workspace is highlighted |
 | Camera | Opens Omarchy's interactive screenshot picker |
-| Bell | Opens notification history |
+| Bell | Toggles notification history open/closed; saved history is retained |
 | Previous / play-pause / next | Uses Omarchy's media controls |
 | Speaker | Opens the volume slider; Mute/Unmute is available beside it |
 | Sun | Opens the display brightness slider, with a 1% minimum |
