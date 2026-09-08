@@ -7,6 +7,10 @@ import subprocess
 import threading
 import time
 
+SESSION_VARIABLES = ('OMARCHY_PATH', 'PATH', 'WAYLAND_DISPLAY',
+                     'HYPRLAND_INSTANCE_SIGNATURE', 'DISPLAY',
+                     'XDG_CURRENT_DESKTOP', 'XDG_SESSION_TYPE')
+
 
 class Desktop:
     def __init__(self):
@@ -17,16 +21,30 @@ class Desktop:
         self.error = None
         self.closed = False
         self.screenshot = None
+        self.environment = dict(os.environ, LC_ALL='C.UTF-8')
         self.provider = os.environ.get('T1BRIDGE_DESKTOP_PROVIDER', '/usr/local/libexec/t1bridge-omarchy-desktop')
         if not Path(self.provider).is_absolute() or not os.access(self.provider, os.X_OK):
             raise ValueError('The Omarchy desktop provider is not installed')
         self.thread = threading.Thread(target=self.worker, daemon=True)
         self.thread.start()
 
-    @staticmethod
-    def run(args, timeout=1):
-        env = dict(os.environ, LC_ALL='C.UTF-8')
-        return subprocess.check_output(args, timeout=timeout, text=True, stderr=subprocess.DEVNULL, env=env)
+    def run(self, args, timeout=1):
+        return subprocess.check_output(args, timeout=timeout, text=True,
+                                       stderr=subprocess.DEVNULL, env=self.environment.copy())
+
+    def refresh_environment(self):
+        # The user service can precede Hyprland's import-environment at login.
+        # Read only desktop routing variables; never copy arbitrary overrides.
+        try:
+            values = json.loads(self.run(['/usr/bin/systemctl', '--user',
+                                         'show-environment', '--output=json']))
+            if not isinstance(values, dict):
+                return
+            updates = {key: values[key] for key in SESSION_VARIABLES if key in values}
+            if all(isinstance(value, str) and '\0' not in value for value in updates.values()):
+                self.environment.update(updates)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
 
     def submit(self, action, value=None):
         with self.condition:
@@ -37,6 +55,7 @@ class Desktop:
             self.condition.notify()
 
     def status(self):
+        self.refresh_environment()
         values = {}
         try:
             values['locked'] = self.run(['omarchy-shell','lock','isLocked']).strip() != 'false'
@@ -97,7 +116,8 @@ class Desktop:
         elif action == 'screenshot':
             if self.screenshot is None or self.screenshot.poll() is not None:
                 self.screenshot = subprocess.Popen(['omarchy','capture','screenshot'],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                    env=self.environment.copy())
         elif action in fixed:
             self.run(fixed[action])
 

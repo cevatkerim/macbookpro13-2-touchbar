@@ -130,7 +130,9 @@ and its already-running-device path passed. On the next reboot, the saved-image
 startup and keybag services both completed successfully, and the owner reported
 working hardware and Touch ID. The custom renderer initially fell back to stock
 because its socket was not ready; its subsequent
-[startup readiness fix](touchbar/README.md) has a separate pending reboot test.
+[startup readiness fix](touchbar/README.md) passed the following reboot. That
+boot exposed a separate desktop-environment issue, also fixed in the renderer;
+its validation status is recorded in the renderer documentation.
 A user service retry drop-in also restarts a failed launcher.
 
 The private-link UFW exception is restricted to the observed T1 interface,

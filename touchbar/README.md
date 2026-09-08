@@ -94,6 +94,14 @@ immediately; an expired readiness wait permits the normal stock fallback.
 See [firmware startup validation](../touchid.md#firmware-startup-after-reboot).
 After updating the repository, rerun the installer to update installed files.
 
+Omarchy imports its desktop environment into the user service manager after
+login. The renderer refreshes a small allowlist of desktop routing variables
+from that manager during status polling, including `OMARCHY_PATH`, `PATH` and
+the Wayland/Hyprland session identifiers. Desktop commands and screenshots use
+that refreshed environment. This prevents an early service start from leaving
+lock queries permanently unavailable and displaying a false "Screen locked"
+message. A failed lock query still blocks desktop shortcuts.
+
 The application launcher now opens settings. Use its **Custom Touch Bar** switch
 to choose the renderer, or its restart button to restart the current selection.
 The equivalent restart command is:
@@ -134,7 +142,7 @@ interpolation or arbitrary-command configuration.
 
 On this MacBookPro13,2, the first 12-second live trial negotiated the display,
 submitted frames, exited successfully and restarted the stock renderer. The
-installed custom renderer then started successfully. Twenty-seven automated tests
+installed custom renderer then started successfully. Thirty automated tests
 cover touch transitions, slider clamping, context changes, function keys,
 workspace selection, packet validation, cancellation races, lock gating,
 preference validation, shortcut ordering/visibility and renderer selection
@@ -146,7 +154,11 @@ native pixels. A later reboot confirmed firmware startup but exposed an early
 custom-renderer exit before its socket existed. The readiness fix passed tests
 for delayed availability, timeout, cancellation and non-retryable failures, plus
 a live trial that simulated missing hardware before connecting and rendering on
-the real display. A further reboot of this renderer fix and suspend/resume are
+the real display. The next reboot confirmed that readiness wait worked, then
+exposed missing desktop environment variables in the early-started process.
+The environment refresh fix passed a live test with those variables deliberately
+removed: the real lock and workspace queries recovered, and a captured Touch Bar
+frame showed the normal controls. Its next real reboot and suspend/resume are
 still untested.
 
 The workspace page contains workspaces 1–10. The panel customizes the supported
