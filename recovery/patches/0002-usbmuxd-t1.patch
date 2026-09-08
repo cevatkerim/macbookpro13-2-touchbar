@@ -1,0 +1,30 @@
+From 5c9c60d8ecbbecc15993d0f548fa540b4b4647f4 Mon Sep 17 00:00:00 2001
+From: Kerim Incedayi <k@kerim.me>
+Date: Tue, 8 Sep 2026 11:33:42 +0200
+Subject: [PATCH] Allow opt-in discovery of T1 restored USB device class
+
+---
+ src/usb.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/usb.c b/src/usb.c
+index d0e9afc..7133c27 100644
+--- a/src/usb.c
++++ b/src/usb.c
+@@ -1060,7 +1060,12 @@ int usb_init(void)
+ #ifdef HAVE_LIBUSB_HOTPLUG_API
+ 	if (libusb_has_capability(LIBUSB_CAP_HAS_HOTPLUG)) {
+ 		usbmuxd_log(LL_INFO, "Registering for libusb hotplug events");
+-		res = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, VID_APPLE, LIBUSB_HOTPLUG_MATCH_ANY, 0, usb_hotplug_cb, NULL, &usb_hotplug_cb_handle);
++		/* T1 restored uses a nonzero device class. Keep this experimental
++		 * enumeration change opt-in; usb_device_add still checks product IDs
++		 * and the mux interface before claiming anything. */
++		const char *t1 = getenv("USBMUXD_T1_RECOVERY");
++		int device_class = (t1 && !strcmp(t1, "1")) ? LIBUSB_HOTPLUG_MATCH_ANY : 0;
++		res = libusb_hotplug_register_callback(NULL, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, LIBUSB_HOTPLUG_ENUMERATE, VID_APPLE, LIBUSB_HOTPLUG_MATCH_ANY, device_class, usb_hotplug_cb, NULL, &usb_hotplug_cb_handle);
+ 		if (res == LIBUSB_SUCCESS) {
+ 			device_polling = 0;
+ 		} else {
+-- 
+2.55.0
+

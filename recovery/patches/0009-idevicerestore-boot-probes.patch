@@ -1,0 +1,450 @@
+From f51b883aac1acb59d8eb333160988b5dcbf37d62 Mon Sep 17 00:00:00 2001
+From: Kerim Incedayi <k@kerim.me>
+Date: Tue, 8 Sep 2026 13:39:53 +0200
+Subject: [PATCH] Add bounded T1 restore boot probes and record rejected
+ hardware tests
+
+---
+ docs/T1-EXPERIMENTAL.md |  76 ++++++++++++++++++-
+ scripts/t1-run.py       |   2 +-
+ src/t1.c                | 160 ++++++++++++++++++++++++++++++++++++++--
+ src/t1.h                |   3 +
+ src/t1_policy.c         |  26 +++++++
+ tests/test_t1.py        |  36 +++++++++
+ 6 files changed, 292 insertions(+), 11 deletions(-)
+
+diff --git a/docs/T1-EXPERIMENTAL.md b/docs/T1-EXPERIMENTAL.md
+index 7a674e9..3381a5c 100644
+--- a/docs/T1-EXPERIMENTAL.md
++++ b/docs/T1-EXPERIMENTAL.md
+@@ -158,7 +158,7 @@ than pasting it into public terminal output. Never share private logs or artifac
+ 
+ Environment controls (all other IDEVICERESTORE variables are rejected):
+ 
+-- `IDEVICERESTORE_T1_MODE`: inspect, preflight, provision, or replay.
++- `IDEVICERESTORE_T1_MODE`: inspect, preflight, boot-probe, memboot-probe, provision, or replay.
+ - `IDEVICERESTORE_T1_PRIVATE`: existing absolute root-owned mode-0700 directory.
+ - `IDEVICERESTORE_T1_FDR_INPUT_DIR`: optional previous successful pass-A directory,
+   containing FDRData and device.plist; only used in provision mode (pass B).
+@@ -209,7 +209,7 @@ with failed internal storage remains unverified even in the original report.
+ ## Development result
+ 
+ Patched libirecovery, libtatsu, usbmuxd and idevicerestore compiled locally.
+-All 24 idevicerestore offline tests and the libtatsu mock-transport test passed.
++All 28 idevicerestore offline tests and the libtatsu mock-transport test passed.
+ Earlier gcc static analysis with strict warnings passed for the initial T1 C
+ modules. The compiled inspection mode accepted the checksum-verified Apple
+ package's x619ap 14Y901 resources. The live preflight passed after correcting the
+@@ -217,8 +217,8 @@ ECID argument format and supplying Apple's official CA to the signing connection
+ One provision attempt loaded iBEC and obtained a fresh ticket, then stopped at
+ `ramdisk`; its private console reported `Ramdisk image not valid`. The original
+ restore ramdisk SHA-384 and its digest in the Apple ticket match the manifest.
+-The precise reason for device rejection remains unresolved; no further uploads
+-were attempted. No restored session, NORData request, FDR generation or phase-14
++The precise reason for device rejection remains unresolved; subsequent probes are
++recorded below. No restored session, NORData request, FDR generation or phase-14
+ memboot occurred. The saved pair remains incomplete and cannot be replayed.
+ 
+ The test sent `setenv auto-boot false` and `saveenv` to the T1 before the ramdisk
+@@ -242,3 +242,71 @@ calling FRST. No reset was performed.
+ Verification of this table is specific to this machine, not permission to call
+ the same method on arbitrary models. T1 already enumerates in recovery here, so
+ no reset is needed for preflight.
++
++
++## Follow-up boot probes, 2026-09-08
++
++The owner rebooted Linux and also inspected Sierra Recovery 10.12.6 (16G29) and
++Monterey Recovery 12.6 (21G115). Searches under /usr and /System/Library found
++AppleEmbeddedOSSupportHost.kext and EmbeddedOSSupportHost.framework, without an
++EmbeddedOSInstall service. This is a limited filesystem search, not proof that
++all installer resources lack the service. No erase or macOS install was performed.
++The working audio DKMS module loaded again after the owner's Linux reboot.
++
++Patch 0009 adds two explicitly selected diagnostic modes. Neither starts a
++restored provisioning session, acknowledges FDR, or marks a production pair
++complete:
++
++- `boot-probe` tries the existing iBEC and separate restore-component sequence,
++  with a checked build-version query after recovery re-enumeration, bounded
++  private console capture, IMG4/tag/ticket checks, upload-length comparison and
++  transfer delays. It stops before StartRestore even if the boot succeeds.
++- `memboot-probe` signs for the currently running recovery device without loading
++  iBEC, saves an incomplete preflight-only pair, concatenates personalized
++  RestoreRamDisk/RestoreKernelCache/RestoreDeviceTree/RestoreSEP in that order,
++  and dispatches `memboot` with bRequest=1 and the fixed restore boot arguments.
++  Each component contains the same ticket; no separate raw `ticket` command is
++  sent. This is a new experimental hypothesis, not the guide author's confirmed
++  phase-11 protocol. Its only success condition is a matching restored service.
++
++Both probes can change T1 boot state and save auto-boot=false. They are not
++read-only operations. A successful probe would establish a boot path only, not
++working Touch Bar functionality or persistent activation.
++
++Observed results:
++
++1. Checked recovery build-version was iBoot-3406.65.1.2. `boot-stage` was not
++   supported. Recovery re-enumeration plus that version is insufficient evidence
++   that the uploaded iBEC executed rather than falling back to existing iBoot.
++2. The personalized restore ramdisk was 25,756,269 bytes, and the device's
++   reported filesize matched exactly. The capacity query returned 0x8000000.
++   Readiness checks and delays still ended in `Ramdisk image not valid` and USB
++   PIPE (-9) on the ramdisk command.
++3. An extra zero-length 0x21/1 notification after `go`, taken from upstream's
++   generic sequence, returned PIPE. That attempted change was removed.
++4. Separate private diagnostics checked the current ticket's device fields and
++   nonces, verified its body signature against its embedded certificate key,
++   and checked the ramdisk digest. The signature check was not a full certificate
++   chain validation. A raw ticket command and an original IM4P ramdisk probe were
++   rejected as well; these diagnostic helpers are not part of the public patch.
++5. With AC power verified, memboot-probe-001 saved a 36,921,209-byte combined
++   restore image, dispatched the boot transaction, and did not find restored
++   during its 60-second observation period. T1 remained/reappeared as 05ac:1281.
++   The log had no captured explanatory boot-console error. FDRData was absent
++   and RestoreFinished remained false. The private mux process exited; its old
++   socket pathname alone is not evidence of a running daemon.
++
++All 28 offline tests passed, including malformed/mixed/truncated restore-image
++rejection before any command and stopping at each simulated transfer failure.
++No NOR/FDR provisioning, phase-14 replay, FRST, EFI staging, or Touch Bar driver
++installation occurred. The external USB backup remains unchanged. No successful
++Touch Bar activation or permanent fix is claimed.
++
++Before another firmware attempt, obtain a concrete phase-11 boot sequence or
++review the activation author's actual source. The public guide explicitly says
++its successful patches are unpublished. A native macOS installation on external
++storage is also not a confirmed workaround: a firsthand report from another
++A1706 owner with a failed SSD describes repair failing because no internal system
++EFI was found, and reports success only after repairing the onboard SSD:
++https://superuser.com/questions/1537778/macbook-pro-a1706-bridgeos-and-external-efi
++That single report does not prove a software workaround is impossible.
+diff --git a/scripts/t1-run.py b/scripts/t1-run.py
+index 645bf46..ede4bc7 100644
+--- a/scripts/t1-run.py
++++ b/scripts/t1-run.py
+@@ -32,7 +32,7 @@ def select_ecid():
+ 
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+-    parser.add_argument('mode', choices=['inspect', 'preflight', 'provision', 'replay'])
++    parser.add_argument('mode', choices=['inspect', 'preflight', 'boot-probe', 'memboot-probe', 'provision', 'replay'])
+     parser.add_argument('firmware', type=Path, help='Extracted EmbeddedOS Contents/Resources')
+     parser.add_argument('--prefix', type=Path, required=True, help='Local prefix containing patched libirecovery')
+     parser.add_argument('--binary', type=Path, default=Path(__file__).resolve().parents[1]/'src/idevicerestore')
+diff --git a/src/t1.c b/src/t1.c
+index 1171ae3..99e3015 100644
+--- a/src/t1.c
++++ b/src/t1.c
+@@ -172,6 +172,58 @@ static void event_cb(const irecv_device_event_t *event, void *user)
+     if (event->type == IRECV_DEVICE_ADD && atomic_load(&s->removed)) atomic_store(&s->returned, 1);
+ }
+ 
++static size_t console_bytes;
++static int private_console(irecv_client_t client, const irecv_event_t *event)
++{
++    (void)client;
++    if (event->size <= 0 || event->size > 4096 || console_bytes + event->size > 65536) return 1;
++    fwrite(event->data, 1, event->size, stderr);
++    console_bytes += event->size;
++    return 0;
++}
++
++static void drain_console(irecv_client_t r)
++{
++    console_bytes = 0;
++    if (irecv_event_subscribe(r, IRECV_RECEIVED, private_console, NULL) == IRECV_E_SUCCESS) {
++        irecv_receive(r);
++        irecv_event_unsubscribe(r, IRECV_RECEIVED);
++    }
++}
++
++/* Do not read a stale response after a rejected getenv command. */
++static int checked_getenv(irecv_client_t r, const char *name, char value[256])
++{
++    char command[128];
++    snprintf(command, sizeof(command), "getenv %s", name);
++    value[0] = 0;
++    if (strict_command(r, command, 0)) return -1;
++    int n = irecv_usb_control_transfer(r, 0xc0, 0, 0, 0,
++        (unsigned char *)value, 255, 3000);
++    if (n <= 0 || n > 255) return -1;
++    value[n] = 0;
++    return value[0] ? 0 : -1;
++}
++
++static int wait_ibec_ready(struct idevicerestore_client_t *c)
++{
++    for (int attempt = 0; attempt < 30 && !global_quit_flag; attempt++) {
++        char value[256];
++        if (!checked_getenv(c->recovery->client, "build-version", value)) {
++            fprintf(stderr, "T1 iBEC build-version: %s\n", value);
++            drain_console(c->recovery->client);
++            status("iBEC readiness query passed");
++            return 0;
++        }
++        drain_console(c->recovery->client);
++        sleep(1);
++        recovery_client_free(c);
++        if (open_recovery(c)) return -1;
++    }
++    status("iBEC readiness query failed; no restore ramdisk uploaded");
++    return -1;
++}
++
+ static int boot_ibec(struct idevicerestore_client_t *c, plist_t identity)
+ {
+     struct events s = {.ecid = c->ecid};
+@@ -186,14 +238,51 @@ static int boot_ibec(struct idevicerestore_client_t *c, plist_t identity)
+     }
+     if (!atomic_load(&s.returned)) rc = -1;
+     irecv_device_event_unsubscribe(ctx);
+-    return rc ? -1 : open_recovery(c);
++    if (rc || open_recovery(c)) return -1;
++    return wait_ibec_ready(c);
++}
++
++static int send_restore_ramdisk(struct idevicerestore_client_t *c, plist_t identity)
++{
++    void *data = NULL; size_t size = 0;
++    unsigned char *ticket = NULL; unsigned int ticket_size = 0;
++    char value[256];
++    if (component(c, identity, "RestoreRamDisk", &data, &size) ||
++        tss_response_get_ap_img4_ticket(c->tss, &ticket, &ticket_size) ||
++        t1_validate_img4(data, size, "rdsk", ticket, ticket_size)) {
++        free(data); free(ticket); return -1;
++    }
++    free(ticket);
++    if (!checked_getenv(c->recovery->client, "ramdisk-size", value))
++        fprintf(stderr, "T1 ramdisk capacity: %s\n", value);
++    fprintf(stderr, "T1 restore ramdisk upload bytes: %zu\n", size);
++    int sent = irecv_send_buffer(c->recovery->client, data, size, 0);
++    free(data);
++    if (sent != IRECV_E_SUCCESS) return -1;
++    /* Querying the upload length also lets iBoot finish its bulk receive loop. */
++    if (!checked_getenv(c->recovery->client, "filesize", value)) {
++        char *end = NULL;
++        unsigned long long received = strtoull(value, &end, 0);
++        fprintf(stderr, "T1 reported upload bytes: %llu\n", received);
++        if (!end || *end || received != size) {
++            status("T1 reported a different upload length; ramdisk command withheld");
++            return -1;
++        }
++    }
++    /* The upstream ramdisk sequence queries this optional delay variable. */
++    checked_getenv(c->recovery->client, "ramdisk-delay", value);
++    sleep(1);
++    int rc = strict_command(c->recovery->client, "ramdisk", 0);
++    sleep(2);
++    drain_console(c->recovery->client);
++    return rc;
+ }
+ 
+ static int boot_restore(struct idevicerestore_client_t *c, plist_t identity)
+ {
+     if (strict_command(c->recovery->client, "setenv auto-boot false", 0) ||
+         strict_command(c->recovery->client, "saveenv", 0) ||
+-        send_component_command(c, identity, "RestoreRamDisk", "ramdisk") ||
++        send_restore_ramdisk(c, identity) ||
+         send_component_command(c, identity, "RestoreDeviceTree", "devicetree") ||
+         send_component_command(c, identity, "RestoreSEP", "rsepfirmware") ||
+         recovery_send_component(c, identity, "RestoreKernelCache")) return -1;
+@@ -318,13 +407,54 @@ static int replay(struct idevicerestore_client_t *c, int fd)
+     return rc;
+ }
+ 
++static int memboot_probe(struct idevicerestore_client_t *c, plist_t identity, int fd)
++{
++    const char *names[] = {"RestoreRamDisk", "RestoreKernelCache", "RestoreDeviceTree", "RestoreSEP"};
++    void *image = NULL; size_t image_size = 0;
++    unsigned char *ticket = NULL; unsigned int ticket_size = 0;
++    int rc = -1;
++    if (tss_response_get_ap_img4_ticket(c->tss, &ticket, &ticket_size)) goto done;
++    for (int i = 0; i < 4; i++) {
++        void *data = NULL; size_t size = 0;
++        if (component(c, identity, names[i], &data, &size) || size > 64 * 1024 * 1024 ||
++            image_size + size > 96 * 1024 * 1024) { free(data); goto done; }
++        void *next = realloc(image, image_size + size);
++        if (!next) { free(data); goto done; }
++        image = next;
++        memcpy((char *)image + image_size, data, size); image_size += size;
++        free(data);
++    }
++    if (t1_atomic_write(fd, "restore-probe.img4", image, image_size)) goto done;
++    status("testing signed combined restore image; no restore session will be started");
++    rc = t1_restore_probe_dispatch(image, image_size, ticket, ticket_size,
++        c->recovery->client, replay_command, replay_buffer);
++    if (rc) { drain_console(c->recovery->client); goto done; }
++    recovery_client_free(c);
++    rc = -1;
++    for (int i = 0; i < 60 && !global_quit_flag; i++) {
++        if (!restore_check_mode(c)) {
++            c->mode = MODE_RESTORE;
++            status("combined restore image booted; provisioning has not started");
++            rc = 0; break;
++        }
++        sleep(1);
++    }
++    if (rc) {
++        status("combined restore image did not reach restored");
++        if (!open_recovery(c)) drain_console(c->recovery->client);
++    }
++ done:
++    free(image); free(ticket);
++    return rc;
++}
++
+ int t1_start(struct idevicerestore_client_t *c)
+ {
+     const char *mode = getenv("IDEVICERESTORE_T1_MODE");
+     const char *private_path = getenv("IDEVICERESTORE_T1_PRIVATE");
+     const char *input_path = getenv("IDEVICERESTORE_T1_FDR_INPUT_DIR");
+-    if (!c || !mode || (strcmp(mode, "inspect") && strcmp(mode, "preflight") && strcmp(mode, "provision") && strcmp(mode, "replay"))) {
+-        fprintf(stderr, "T1 requires IDEVICERESTORE_T1_MODE=inspect|preflight|provision|replay. Legacy research flags are unsupported.\n"); return -1;
++    if (!c || !mode || (strcmp(mode, "inspect") && strcmp(mode, "preflight") && strcmp(mode, "boot-probe") && strcmp(mode, "memboot-probe") && strcmp(mode, "provision") && strcmp(mode, "replay"))) {
++        fprintf(stderr, "T1 requires IDEVICERESTORE_T1_MODE=inspect|preflight|boot-probe|memboot-probe|provision|replay. Legacy research flags are unsupported.\n"); return -1;
+     }
+     /* Reject misspelled or inherited research controls, rather than ignore them. */
+     const char *allowed[] = {"IDEVICERESTORE_T1_MODE=", "IDEVICERESTORE_T1_PRIVATE=", "IDEVICERESTORE_T1_FDR_INPUT_DIR=", NULL};
+@@ -360,7 +490,9 @@ int t1_start(struct idevicerestore_client_t *c)
+     int fd = t1_private_open(private_path);
+     if (fd < 0) { fprintf(stderr, "T1 private directory must exist, be owned by root, mode 0700, without symlinks.\n"); return -1; }
+     const char *logname = !strcmp(mode, "replay") ? "replay.private.log" :
+-        !strcmp(mode, "preflight") ? "preflight.private.log" : "provision.private.log";
++        !strcmp(mode, "preflight") ? "preflight.private.log" :
++        !strcmp(mode, "boot-probe") ? "boot-probe.private.log" :
++        !strcmp(mode, "memboot-probe") ? "memboot-probe.private.log" : "provision.private.log";
+     int logfd = openat(fd, logname, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+     status_fd = dup(STDOUT_FILENO);
+     if (logfd < 0 || status_fd < 0) { if (logfd >= 0) close(logfd); close(fd); if (status_fd >= 0) close(status_fd); status_fd = -1; return -1; }
+@@ -400,11 +532,27 @@ int t1_start(struct idevicerestore_client_t *c)
+         rc = t1_preflight(c, identity, fd);
+         goto done;
+     }
++    if (!strcmp(mode, "memboot-probe")) {
++        /* No iBEC replacement: fresh signing for the currently running iBoot.
++         * The saved production pair remains incomplete and replay rejects it. */
++        if (t1_preflight(c, identity, fd)) goto done;
++        rc = memboot_probe(c, identity, fd);
++        goto done;
++    }
+     if (fresh_tss(c, identity) || boot_ibec(c, identity) || fresh_tss(c, identity)) goto done;
+     pair = capture_pair(c, identity);
+     if (!pair || save_plist(fd, "preflight.plist", pair)) goto done;
+     status("saved matching personalized image and ticket; restore still pending");
+-    if (boot_restore(c, identity) || restore_session(c, identity, fd, input)) goto done;
++    if (boot_restore(c, identity)) {
++        if (c->recovery) drain_console(c->recovery->client);
++        goto done;
++    }
++    if (!strcmp(mode, "boot-probe")) {
++        status("restore ramdisk booted; no restore session or provisioning started");
++        rc = 0;
++        goto done;
++    }
++    if (restore_session(c, identity, fd, input)) goto done;
+     if (input) {
+         plist_t output = read_plist(fd, "FDRData");
+         char *ib = NULL, *ob = NULL; uint32_t il = 0, ol = 0;
+diff --git a/src/t1.h b/src/t1.h
+index d6928b5..5492ccd 100644
+--- a/src/t1.h
++++ b/src/t1.h
+@@ -21,4 +21,7 @@ typedef int (*t1_command_fn)(void *, const char *, int);
+ typedef int (*t1_buffer_fn)(void *, const void *, size_t);
+ int t1_replay_dispatch(plist_t pair, uint64_t ecid, uint64_t now, void *transport,
+                        t1_command_fn command, t1_buffer_fn buffer);
++int t1_restore_probe_dispatch(const void *image, size_t image_size,
++    const void *ticket, size_t ticket_size, void *transport,
++    t1_command_fn command, t1_buffer_fn buffer);
+ #endif
+diff --git a/src/t1_policy.c b/src/t1_policy.c
+index 927280a..7525524 100644
+--- a/src/t1_policy.c
++++ b/src/t1_policy.c
+@@ -244,3 +244,29 @@ int t1_replay_dispatch(plist_t pair, uint64_t ecid, uint64_t now, void *transpor
+         command(transport, "memboot", 1)) return -1;
+     return 0;
+ }
++
++/* Experimental restore boot, distinct from completed production-image replay.
++ * Each restore IMG4 carries its ticket. No raw ticket command, NOR write,
++ * restored StartRestore request, FDR acknowledgement, or EFI operation here.
++ * Whether T1 accepts this concatenation for restore is a hardware hypothesis.
++ */
++int t1_restore_probe_dispatch(const void *image, size_t image_size,
++    const void *ticket, size_t ticket_size, void *transport,
++    t1_command_fn command, t1_buffer_fn buffer)
++{
++    if (!command || !buffer || !image || !image_size || image_size > T1_MAX_FILE ||
++        !ticket || !ticket_size || ticket_size > 1024 * 1024) return -1;
++    const unsigned char *p = image, *end = p + image_size;
++    const char *tags[] = {"rdsk", "rkrn", "rdtr", "rsep"};
++    for (int i = 0; i < 4; i++) {
++        const unsigned char *start = p, *v; size_t n;
++        if (der(&p, end, 0x30, &v, &n) ||
++            t1_validate_img4(start, p - start, tags[i], ticket, ticket_size)) return -1;
++    }
++    if (p != end) return -1;
++    if (command(transport, "setenv auto-boot false", 0) ||
++        command(transport, "saveenv", 0) || buffer(transport, image, image_size) ||
++        command(transport, "setenv boot-args rd=md0 -restore IOUSBDeviceController-configuration=standardMuxOnly", 0) ||
++        command(transport, "memboot", 1)) return -1;
++    return 0;
++}
+diff --git a/tests/test_t1.py b/tests/test_t1.py
+index 001673e..8ef7704 100644
+--- a/tests/test_t1.py
++++ b/tests/test_t1.py
+@@ -36,6 +36,7 @@ lib.t1_validate_pair.argtypes = [C.c_void_p, C.c_uint64]
+ COMMAND = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_char_p, C.c_int)
+ BUFFER = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_void_p, C.c_size_t)
+ lib.t1_replay_dispatch.argtypes = [C.c_void_p, C.c_uint64, C.c_uint64, C.c_void_p, COMMAND, BUFFER]
++lib.t1_restore_probe_dispatch.argtypes = [C.c_void_p, C.c_size_t, C.c_void_p, C.c_size_t, C.c_void_p, COMMAND, BUFFER]
+ 
+ class Plist:
+     def __init__(self, obj):
+@@ -80,6 +81,41 @@ def dispatch(obj, fail_at=None, now=110):
+         rc=lib.t1_replay_dispatch(ptr,123,now,None,COMMAND(cmd),BUFFER(buf))
+     return rc,calls
+ 
++def probe_dispatch(data, ticket=TICKET, fail_at=None):
++    calls=[]
++    def cmd(_, name, breq):
++        calls.append(('command',name.decode(),breq))
++        return -1 if len(calls)==fail_at else 0
++    def buf(_, ptr, size):
++        calls.append(('buffer',C.string_at(ptr,size)))
++        return -1 if len(calls)==fail_at else 0
++    rc=lib.t1_restore_probe_dispatch(data,len(data),ticket,len(ticket),None,COMMAND(cmd),BUFFER(buf))
++    return rc,calls
++
++class RestoreBootProbe(unittest.TestCase):
++    def setUp(self):
++        self.data=b''.join(image(t) for t in ('rdsk','rkrn','rdtr','rsep'))
++    def test_only_restore_boot_commands(self):
++        rc,calls=probe_dispatch(self.data)
++        self.assertEqual(rc,0)
++        self.assertEqual(calls,[('command','setenv auto-boot false',0),('command','saveenv',0),
++            ('buffer',self.data),
++            ('command','setenv boot-args rd=md0 -restore IOUSBDeviceController-configuration=standardMuxOnly',0),
++            ('command','memboot',1)])
++    def test_every_failed_transfer_stops_dispatch(self):
++        for n in range(1,6):
++            rc,calls=probe_dispatch(self.data,fail_at=n)
++            self.assertEqual(rc,-1)
++            self.assertEqual(len(calls),n)
++    def test_reject_wrong_image_or_ticket_before_any_command(self):
++        for data in [pair()['Image'],self.data+b'padding',b'2GMI'+self.data,
++                     image('rdsk',TICKET+b'wrong')+b''.join(image(t) for t in ('rkrn','rdtr','rsep'))]:
++            self.assertEqual(probe_dispatch(data),(-1,[]))
++        self.assertEqual(probe_dispatch(self.data,ticket=TICKET+b'wrong'),(-1,[]))
++    def test_reject_every_truncation_before_any_command(self):
++        for n in range(len(self.data)):
++            self.assertEqual(probe_dispatch(self.data[:n]),(-1,[]))
++
+ class T1Policy(unittest.TestCase):
+     def test_firmware_identity(self):
+         m={'ProductVersion':'3.0','ProductBuildVersion':'14Y901','BuildIdentities':[{'ApChipID':'0x8002','ApBoardID':'0x12','Info':{'DeviceClass':'x619ap','Variant':'Customer Boot'},'Manifest':{}}]}
+-- 
+2.55.0
+

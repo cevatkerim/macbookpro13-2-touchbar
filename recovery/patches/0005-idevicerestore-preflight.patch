@@ -1,0 +1,367 @@
+From 34f95d81f027ad5d2686430799b77f26da18c507 Mon Sep 17 00:00:00 2001
+From: Kerim Incedayi <k@kerim.me>
+Date: Tue, 8 Sep 2026 11:59:33 +0200
+Subject: [PATCH] Add nonflashing T1 preflight using verified Apple signing
+ transport
+
+---
+ Makefile.am               |  1 +
+ docs/T1-EXPERIMENTAL.md   | 68 +++++++++++++++++++++++++++++++++------
+ scripts/t1-run.py         |  6 ++--
+ src/idevicerestore.c      |  3 +-
+ src/t1.c                  | 24 +++++++++++---
+ src/t1.h                  |  1 +
+ tests/preflight_harness.c | 67 ++++++++++++++++++++++++++++++++++++++
+ tests/test_t1.py          | 25 ++++++++++++++
+ 8 files changed, 178 insertions(+), 17 deletions(-)
+ create mode 100644 tests/preflight_harness.c
+
+diff --git a/Makefile.am b/Makefile.am
+index 4996e97..f7dc193 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -4,6 +4,7 @@ SUBDIRS = src docs
+ 
+ EXTRA_DIST = \
+ 	tests/test_t1.py \
++	tests/preflight_harness.c \
+ 	scripts/t1-run.py \
+ 	docs \
+ 	README.md \
+diff --git a/docs/T1-EXPERIMENTAL.md b/docs/T1-EXPERIMENTAL.md
+index a427502..57ca1b2 100644
+--- a/docs/T1-EXPERIMENTAL.md
++++ b/docs/T1-EXPERIMENTAL.md
+@@ -21,6 +21,13 @@ bundle to prevent mixing separate files from different personalization requests.
+ 
+ Implemented:
+ 
++- Preflight requests an Apple ticket and constructs/validates the image locally.
++  It exits before iBEC upload and writes only an incomplete preflight-only.plist;
++  replay rejects this file. It does not start restored or require usbmuxd.
++- T1 signing uses the accompanying libtatsu verified-HTTPS API, restricted to
++  https://gs.apple.com/TSS/controller?action=2 with certificate/hostname checking,
++  no redirects or HTTP fallback, bounded timeouts, and failure on transport errors.
++
+ - Identity/build restriction and explicit ECID selection; validate the physical
+   recovery device and restored HardwareInfo against the selected chip/board/ECID.
+ - Phase 11 bypasses OS/filesystem extraction and generic partition restore options.
+@@ -82,7 +89,8 @@ Do not infer a successful boot from a zero phase-14 dispatch exit status.
+ 
+ ## Build in a local prefix
+ 
+-Build the accompanying libirecovery and usbmuxd patches first. Do not install
++Build the accompanying libirecovery, libtatsu and usbmuxd patches first. The new
++libtatsu API is required to link idevicerestore. Do not install
+ this experimental stack into /usr or replace the system usbmuxd service.
+ Dependencies on Arch are already available in this development environment:
+ autoconf, automake, libtool, pkgconf, libusb, libimobiledevice-glue, libplist,
+@@ -96,6 +104,10 @@ export LD_LIBRARY_PATH="$T1_PREFIX/lib"
+ # In patched libirecovery:
+ ./autogen.sh --prefix="$T1_PREFIX" --without-udev
+ make -j4 && make install
++# In patched libtatsu:
++./autogen.sh --prefix="$T1_PREFIX"
++make -j4 && make install
++sh tests/test_secure_transport.sh
+ # In patched usbmuxd (build only, use src/usbmuxd directly):
+ ./autogen.sh --prefix="$T1_PREFIX" --without-systemd
+ make -j4
+@@ -109,7 +121,11 @@ The tests compile the actual C policy with UndefinedBehaviorSanitizer and strict
+ warnings. Synthetic fixtures exercise identity checks, excluded restore options,
+ request restrictions, exact replay ordering, each simulated transport failure,
+ wrong/incomplete pairs, mismatched tickets/tags, truncated DER, private file
+-permissions, unsafe file types and FDR persistence/rejection. No test opens USB,
++permissions, unsafe file types and FDR persistence/rejection. A linked preflight
++harness has no firmware-upload implementations and checks signing failure plus
++incomplete output that replay rejects. The libtatsu mock-transport test checks
++HTTPS settings, rejected endpoints, unsupported security options and rejection of
++a partial success response after a certificate error. No test opens USB,
+ contacts Apple, starts usbmuxd, changes drivers, or writes firmware.
+ 
+ ## Offline inspection
+@@ -136,11 +152,29 @@ than pasting it into public terminal output. Never share private logs or artifac
+ 
+ Environment controls (all other IDEVICERESTORE variables are rejected):
+ 
+-- `IDEVICERESTORE_T1_MODE`: inspect, provision, or replay.
++- `IDEVICERESTORE_T1_MODE`: inspect, preflight, provision, or replay.
+ - `IDEVICERESTORE_T1_PRIVATE`: existing absolute root-owned mode-0700 directory.
+ - `IDEVICERESTORE_T1_FDR_INPUT_DIR`: optional previous successful pass-A directory,
+   containing FDRData and device.plist; only used in provision mode (pass B).
+ 
++Preflight first: create a new root-owned 0700 directory on private local storage
++and run the launcher as root (using pkexec on this development machine):
++
++```sh
++pkexec install -d -m 0700 /var/lib/t1-touchbar/private/preflight-001
++pkexec python3 scripts/t1-run.py preflight \
++  /path/to/iBridge1_1Customer.bundle/Contents/Resources \
++  --prefix "$T1_PREFIX" --private /var/lib/t1-touchbar/private/preflight-001
++```
++
++This sends the connected T1's unique chip identifier, boot nonces and firmware
++metadata to Apple's signing service. It does not send home files or upload
++firmware. Get the machine owner's approval for that disclosure before running.
++A successful preflight checks signing and local image construction only; it does
++not validate FDR provisioning or promise firmware rollback. A signing rejection
++must be resolved before proceeding; never bypass it or substitute another T1's
++artifacts. Use a fresh directory for each attempt so existing logs are preserved.
++
+ Pass A: provision into a new private directory, without input FDR. Pass B:
+ provision into another new directory, using pass A as the input. Replay: use the
+ pass-B directory and no FDR input variable. Each live invocation requires `-i`
+@@ -164,9 +198,25 @@ with failed internal storage remains unverified even in the original report.
+ 
+ ## Development result
+ 
+-All three patches compiled locally. All 21 offline tests passed; gcc static analysis
+-with strict warnings passed for both new C modules. The
+-compiled inspection mode accepted the checksum-verified Apple package's x619ap
+-14Y901 resources. No live recovery, provisioning, FDR, memboot, or Touch Bar test
+-has been performed with these patches. The previous working audio DKMS package,
+-keyboard/trackpad, host partitions and boot configuration are unchanged.
++Patched libirecovery, libtatsu, usbmuxd and idevicerestore compiled locally.
++All 22 idevicerestore offline tests and the libtatsu mock-transport test passed.
++Earlier gcc static analysis with strict warnings passed for the initial T1 C
++modules. The compiled inspection mode accepted the checksum-verified Apple
++package's x619ap 14Y901 resources. No live signing, provisioning, FDR, memboot or
++Touch Bar test has been performed with these patches.
++
++The separate USB was formatted for a private live file backup of home, /etc and
++/boot, with partition metadata, the Linux encryption header and package list.
++The compressed archives passed integrity/listing checks; two home files changed
++while being read. This is not a bootable rescue drive, a complete disk clone or
++a T1 firmware backup. Working audio, keyboard/trackpad and boot configuration
++were not modified by this checkpoint.
++
++The local ACPI table defines the T1 reset method at
++`\_SB.PCI0.XHC1.RHUB.ASOC.FRST`: it toggles EC.SOCR with 15 ms and 600 ms waits,
++and has no explicit Return. The accompanying acpi_call patch handles a successful
++method with no output object instead of dereferencing NULL. It compiled against
++the running kernel; the module has not been loaded and FRST has not been called.
++Verification of this table is specific to this machine, not permission to call
++the same method on arbitrary models. T1 already enumerates in recovery here, so
++no reset is needed for preflight.
+diff --git a/scripts/t1-run.py b/scripts/t1-run.py
+index 39000a3..d6dc31a 100644
+--- a/scripts/t1-run.py
++++ b/scripts/t1-run.py
+@@ -32,7 +32,7 @@ def select_ecid():
+ 
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+-    parser.add_argument('mode', choices=['inspect', 'provision', 'replay'])
++    parser.add_argument('mode', choices=['inspect', 'preflight', 'provision', 'replay'])
+     parser.add_argument('firmware', type=Path, help='Extracted EmbeddedOS Contents/Resources')
+     parser.add_argument('--prefix', type=Path, required=True, help='Local prefix containing patched libirecovery')
+     parser.add_argument('--binary', type=Path, default=Path(__file__).resolve().parents[1]/'src/idevicerestore')
+@@ -41,8 +41,8 @@ def main():
+     args = parser.parse_args()
+     if args.mode == 'inspect' and (args.private or args.fdr_input):
+         parser.error('inspect accepts no private artifact directories')
+-    if args.mode == 'replay' and args.fdr_input:
+-        parser.error('replay accepts only the completed pass-B directory')
++    if args.mode != 'provision' and args.fdr_input:
++        parser.error('only provision accepts --fdr-input')
+     env = {k:v for k,v in os.environ.items() if not k.startswith('IDEVICERESTORE_') and k != 'LD_PRELOAD'}
+     env['LD_LIBRARY_PATH'] = str(args.prefix.resolve()/'lib')
+     env['IDEVICERESTORE_T1_MODE'] = args.mode
+diff --git a/src/idevicerestore.c b/src/idevicerestore.c
+index 38257f0..c68c3b6 100644
+--- a/src/idevicerestore.c
++++ b/src/idevicerestore.c
+@@ -2529,7 +2529,8 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
+ 	}
+ 
+ 	/* send request and grab response */
+-	response = tss_request_send(request, client->tss_url);
++	response = t1_requested() ? tss_request_send_secure(request, NULL) :
++        tss_request_send(request, client->tss_url);
+ 	if (response == NULL) {
+ 		logger(LL_INFO, "ERROR: Unable to send TSS request\n");
+ 		plist_free(request);
+diff --git a/src/t1.c b/src/t1.c
+index 84ecbac..66e5985 100644
+--- a/src/t1.c
++++ b/src/t1.c
+@@ -149,6 +149,17 @@ static plist_t capture_pair(struct idevicerestore_client_t *c, plist_t identity)
+     return p;
+ }
+ 
++int t1_preflight(struct idevicerestore_client_t *c, plist_t identity, int fd)
++{
++    if (fresh_tss(c, identity)) return -1;
++    plist_t pair = capture_pair(c, identity);
++    if (!pair) return -1;
++    int rc = save_plist(fd, "preflight-only.plist", pair);
++    plist_free(pair);
++    if (!rc) status("preflight passed: Apple ticket and local image validated; no firmware uploaded");
++    return rc;
++}
++
+ struct events { uint64_t ecid; atomic_int removed; atomic_int returned; };
+ static void event_cb(const irecv_device_event_t *event, void *user)
+ {
+@@ -309,8 +320,8 @@ int t1_start(struct idevicerestore_client_t *c)
+     const char *mode = getenv("IDEVICERESTORE_T1_MODE");
+     const char *private_path = getenv("IDEVICERESTORE_T1_PRIVATE");
+     const char *input_path = getenv("IDEVICERESTORE_T1_FDR_INPUT_DIR");
+-    if (!c || !mode || (strcmp(mode, "inspect") && strcmp(mode, "provision") && strcmp(mode, "replay"))) {
+-        fprintf(stderr, "T1 requires IDEVICERESTORE_T1_MODE=inspect|provision|replay. Legacy research flags are unsupported.\n"); return -1;
++    if (!c || !mode || (strcmp(mode, "inspect") && strcmp(mode, "preflight") && strcmp(mode, "provision") && strcmp(mode, "replay"))) {
++        fprintf(stderr, "T1 requires IDEVICERESTORE_T1_MODE=inspect|preflight|provision|replay. Legacy research flags are unsupported.\n"); return -1;
+     }
+     /* Reject misspelled or inherited research controls, rather than ignore them. */
+     const char *allowed[] = {"IDEVICERESTORE_T1_MODE=", "IDEVICERESTORE_T1_PRIVATE=", "IDEVICERESTORE_T1_FDR_INPUT_DIR=", NULL};
+@@ -340,12 +351,13 @@ int t1_start(struct idevicerestore_client_t *c)
+     if (!strcmp(mode, "inspect")) {
+         puts("T1 offline inspection passed: x619ap, 14Y901; required components present. No USB/network operations."); return 0;
+     }
+-    if (geteuid() != 0 || !c->ecid || !private_path || (!strcmp(mode, "replay") && input_path)) {
++    if (geteuid() != 0 || !c->ecid || !private_path || (strcmp(mode, "provision") && input_path)) {
+         fprintf(stderr, "T1 live modes require root, explicit -i ECID, and a private directory; replay uses only its captured pair.\n"); return -1;
+     }
+     int fd = t1_private_open(private_path);
+     if (fd < 0) { fprintf(stderr, "T1 private directory must exist, be owned by root, mode 0700, without symlinks.\n"); return -1; }
+-    const char *logname = !strcmp(mode, "replay") ? "replay.private.log" : "provision.private.log";
++    const char *logname = !strcmp(mode, "replay") ? "replay.private.log" :
++        !strcmp(mode, "preflight") ? "preflight.private.log" : "provision.private.log";
+     int logfd = openat(fd, logname, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+     status_fd = dup(STDOUT_FILENO);
+     if (logfd < 0 || status_fd < 0) { if (logfd >= 0) close(logfd); close(fd); if (status_fd >= 0) close(status_fd); status_fd = -1; return -1; }
+@@ -379,6 +391,10 @@ int t1_start(struct idevicerestore_client_t *c)
+     build_manifest_get_version_information(c->build_manifest, c);
+     c->parameters = plist_new_dict();
+     tss_parameters_add_from_manifest(c->parameters, identity, true);
++    if (!strcmp(mode, "preflight")) {
++        rc = t1_preflight(c, identity, fd);
++        goto done;
++    }
+     if (fresh_tss(c, identity) || boot_ibec(c, identity) || fresh_tss(c, identity)) goto done;
+     pair = capture_pair(c, identity);
+     if (!pair || save_plist(fd, "preflight.plist", pair)) goto done;
+diff --git a/src/t1.h b/src/t1.h
+index 7961c51..d6928b5 100644
+--- a/src/t1.h
++++ b/src/t1.h
+@@ -6,6 +6,7 @@
+ /* Independent experimental entry point; never falls back to generic restore. */
+ int t1_requested(void);
+ int t1_start(struct idevicerestore_client_t *client);
++int t1_preflight(struct idevicerestore_client_t *client, plist_t identity, int fd);
+ plist_t t1_restore_options(void);
+ int t1_identity_valid(plist_t manifest, plist_t identity);
+ int t1_request_allowed(const char *type);
+diff --git a/tests/preflight_harness.c b/tests/preflight_harness.c
+new file mode 100644
+index 0000000..43263fe
+--- /dev/null
++++ b/tests/preflight_harness.c
+@@ -0,0 +1,67 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Link the real preflight implementation with local fixture providers only.
++ * No USB sender, boot, restored, or reverse-proxy implementation is linked.
++ */
++#include "t1.h"
++#include "recovery.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++static const char *fixture;
++static int fail_signing;
++static unsigned char nonce[] = {1,2,3};
++static struct irecv_device_info info = {.ap_nonce=nonce,.ap_nonce_size=3,
++                                       .sep_nonce=nonce,.sep_nonce_size=3};
++const struct irecv_device_info *irecv_get_device_info(irecv_client_t client)
++{ (void)client; return &info; }
++
++int extract_component(ipsw_archive_t archive, const char *name, void **data, size_t *size)
++{
++    (void)archive;
++    char path[1024];snprintf(path,sizeof(path),"%s/%s",fixture,name);
++    FILE *f=fopen(path,"rb");if(!f)return -1;
++    fseek(f,0,SEEK_END);long n=ftell(f);rewind(f);
++    if(n<=0){fclose(f);return -1;}
++    *data=malloc(n);*size=n;
++    if(!*data){fclose(f);return -1;}
++    int ok=fread(*data,1,n,f)==(size_t)n;fclose(f);
++    if(!ok){free(*data);*data=NULL;return -1;}return 0;
++}
++int build_identity_get_component_path(plist_t identity,const char *name,char **path)
++{ (void)identity; *path=strdup(name);return *path?0:-1; }
++int personalize_component(struct idevicerestore_client_t *client,const char *name,
++ const void *raw,size_t size,plist_t tss,void **out,size_t *out_size)
++{
++    (void)client;(void)name;(void)tss;
++    *out=malloc(size);if(!*out)return -1;
++    memcpy(*out,raw,size);*out_size=size;return 0;
++}
++int get_tss_response(struct idevicerestore_client_t *client,plist_t identity,plist_t *tss)
++{
++    (void)client;(void)identity;
++    if(fail_signing)return -1;
++    void *ticket=NULL;size_t size=0;
++    if(extract_component(NULL,"Ticket",&ticket,&size))return -1;
++    *tss=plist_new_dict();plist_dict_set_item(*tss,"ApImg4Ticket",plist_new_data(ticket,size));
++    free(ticket);return 0;
++}
++int main(int argc,char **argv)
++{
++    if(argc!=4)return 2;
++    fixture=argv[1];fail_signing=atoi(argv[3]);
++    int fd=t1_private_open(argv[2]);if(fd<0)return 3;
++    struct recovery_client_t r={0};
++    struct idevicerestore_client_t c={.ecid=123,.recovery=&r};
++    int rc=t1_preflight(&c,NULL,fd);
++    free(c.nonce);plist_free(c.tss);close(fd);
++    return rc?1:0;
++}
++
++int tss_response_get_ap_img4_ticket(plist_t tss, unsigned char **ticket, unsigned int *size)
++{
++    uint64_t n=0;char *data=NULL;
++    plist_get_data_val(plist_dict_get_item(tss,"ApImg4Ticket"),&data,&n);
++    if(!data||!n||n>1024*1024){free(data);return -1;}
++    *ticket=(unsigned char *)data;*size=n;return 0;
++}
+diff --git a/tests/test_t1.py b/tests/test_t1.py
+index ad080c8..6594cc5 100644
+--- a/tests/test_t1.py
++++ b/tests/test_t1.py
+@@ -183,6 +183,31 @@ class PrivateFiles(unittest.TestCase):
+             with Plist(msg) as p:self.assertEqual(lib.t1_fdr_commit(self.fd,p),-1)
+         self.assertFalse((self.path/'FDRData').exists())
+ 
++class PreflightOnly(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.binary=Path(BUILD.name)/'preflight-harness'
++        subprocess.run(['cc','-ffunction-sections','-fdata-sections','-Wl,--gc-sections',
++            '-Wall','-Wextra','-Werror','-fsanitize=undefined','-fno-sanitize-recover=all',
++            '-I'+str(ROOT/'src'),str(ROOT/'src/t1.c'),str(ROOT/'src/t1_policy.c'),
++            str(ROOT/'tests/preflight_harness.c'),'-o',str(cls.binary),*flags],check=True)
++    def test_signing_only_saves_unbootable_incomplete_pair(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root=Path(tmp);source=root/'input';source.mkdir();dest=root/'output';dest.mkdir(mode=0o700)
++            (source/'Ticket').write_bytes(TICKET)
++            for name,tag in [('OSRamdisk','osrd'),('KernelCache','krnl'),('DeviceTree','dtre'),('SEP','sepi')]:
++                (source/name).write_bytes(image(tag))
++            env=dict(os.environ,LD_LIBRARY_PATH=str(PREFIX/'lib'))
++            for fail in [1,0]:
++                result=subprocess.run([str(self.binary),str(source),str(dest),str(fail)],env=env)
++                self.assertEqual(result.returncode,fail)
++                if fail:self.assertEqual(list(dest.iterdir()),[])
++            result=plistlib.loads((dest/'preflight-only.plist').read_bytes())
++            self.assertFalse(result['RestoreFinished'])
++            self.assertEqual(dispatch(result),(-1,[]))
++            self.assertFalse((dest/'preflight.plist').exists())
++            self.assertFalse((dest/'FDRData').exists())
++
+ class CommandLine(unittest.TestCase):
+     def setUp(self):
+         self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)
+-- 
+2.55.0
+

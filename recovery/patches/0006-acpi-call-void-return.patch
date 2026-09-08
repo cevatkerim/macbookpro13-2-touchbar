@@ -1,0 +1,29 @@
+From 9d6069aabebac0d07250609c9d6e1faa697ae022 Mon Sep 17 00:00:00 2001
+From: Kerim Incedayi <k@kerim.me>
+Date: Tue, 8 Sep 2026 11:59:33 +0200
+Subject: [PATCH] Handle successful ACPI methods with no return object
+
+---
+ acpi_call.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/acpi_call.c b/acpi_call.c
+index 2258fe8..8988321 100644
+--- a/acpi_call.c
++++ b/acpi_call.c
+@@ -140,6 +140,12 @@ static void do_acpi_call(const char * method, int argc, union acpi_object *argv)
+ 
+     // reset the result buffer
+     *result_buffer = '\0';
++    /* A method with no Return (such as the T1 FRST method) may complete
++     * successfully without allocating an output object. */
++    if (!buffer.pointer) {
++        snprintf(result_buffer, BUFFER_SIZE, "0x0");
++        return;
++    }
+     acpi_result_to_string(buffer.pointer);
+     kfree(buffer.pointer);
+ 
+-- 
+2.55.0
+

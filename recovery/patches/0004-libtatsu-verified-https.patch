@@ -1,0 +1,243 @@
+From 381b469ddce72f5179189618ac6e19f48f0d7a54 Mon Sep 17 00:00:00 2001
+From: Kerim Incedayi <k@kerim.me>
+Date: Tue, 8 Sep 2026 11:59:33 +0200
+Subject: [PATCH] Add verified HTTPS Apple signing API with offline transport
+ tests
+
+---
+ Makefile.am                    |  2 +
+ include/libtatsu/tss.h         |  1 +
+ src/tss.c                      | 47 +++++++++++++++---
+ tests/secure_transport.c       | 90 ++++++++++++++++++++++++++++++++++
+ tests/test_secure_transport.sh | 12 +++++
+ 5 files changed, 146 insertions(+), 6 deletions(-)
+ create mode 100644 tests/secure_transport.c
+ create mode 100644 tests/test_secure_transport.sh
+
+diff --git a/Makefile.am b/Makefile.am
+index 96d3c7b..52664e1 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -3,6 +3,8 @@ ACLOCAL_AMFLAGS = -I m4
+ SUBDIRS = src include
+ 
+ EXTRA_DIST = \
++	tests/secure_transport.c \
++	tests/test_secure_transport.sh \
+ 	README.md \
+ 	git-version-gen
+ 
+diff --git a/include/libtatsu/tss.h b/include/libtatsu/tss.h
+index 54035a0..c4b17b2 100644
+--- a/include/libtatsu/tss.h
++++ b/include/libtatsu/tss.h
+@@ -60,6 +60,7 @@ LIBTATSU_API int tss_request_add_ap_img3_tags(plist_t request, plist_t parameter
+ 
+ /* i/o */
+ LIBTATSU_API plist_t tss_request_send(plist_t request, const char* server_url_string);
++LIBTATSU_API plist_t tss_request_send_secure(plist_t request, const char* server_url_string);
+ 
+ /* response */
+ LIBTATSU_API int tss_response_get_ap_img4_ticket(plist_t response, unsigned char** ticket, unsigned int* length);
+diff --git a/src/tss.c b/src/tss.c
+index 42ada76..82b161e 100644
+--- a/src/tss.c
++++ b/src/tss.c
+@@ -1706,14 +1706,16 @@ static size_t tss_write_callback(char* data, size_t size, size_t nmemb, tss_resp
+ 	return total;
+ }
+ 
+-plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
++static plist_t tss_request_send_internal(plist_t tss_request, const char* server_url_string, int secure)
+ {
++    const char *apple_url = "https://gs.apple.com/TSS/controller?action=2";
++    if (secure && server_url_string && strcmp(server_url_string, apple_url)) return NULL;
+ 	debug_plist(tss_request);
+ 
+ 	char* request = NULL;
+ 	int status_code = -1;
+ 	int retry = 0;
+-	int max_retries = 15;
++	int max_retries = secure ? 3 : 15;
+ 	unsigned int size = 0;
+ 	char curl_error_message[CURL_ERROR_SIZE];
+ 
+@@ -1752,8 +1754,25 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
+ 		response->content = malloc(1);
+ 		response->content[0] = '\0';
+ 
+-		/* disable SSL verification to allow download from untrusted https locations */
+-		curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 0);
++        if (secure) {
++            /* Fail before sending if the runtime cannot enforce these settings. */
++            if (curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 1L) != CURLE_OK ||
++                curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 2L) != CURLE_OK ||
++                curl_easy_setopt(handle, CURLOPT_PROTOCOLS_STR, "https") != CURLE_OK ||
++                curl_easy_setopt(handle, CURLOPT_REDIR_PROTOCOLS_STR, "https") != CURLE_OK ||
++                curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 0L) != CURLE_OK ||
++                curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 15L) != CURLE_OK ||
++                curl_easy_setopt(handle, CURLOPT_TIMEOUT, 60L) != CURLE_OK ||
++                curl_easy_setopt(handle, CURLOPT_URL, apple_url) != CURLE_OK) {
++                curl_slist_free_all(header); curl_easy_cleanup(handle);
++                free(response->content); free(response); free(request);
++                return NULL;
++            }
++            server_url_string = apple_url;
++        } else {
++            /* Preserve the existing API's transport policy. */
++            curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 0L);
++        }
+ 
+ 		curl_easy_setopt(handle, CURLOPT_ERRORBUFFER, curl_error_message);
+ 		curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, (curl_write_callback)&tss_write_callback);
+@@ -1776,11 +1795,16 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
+ 
+ 		debug("Sending TSS request attempt %d... ", retry);
+ 
+-		curl_easy_perform(handle);
++		CURLcode transfer = curl_easy_perform(handle);
+ 		curl_slist_free_all(header);
+ 		curl_easy_cleanup(handle);
++        if (secure && transfer != CURLE_OK) {
++            error("Verified HTTPS TSS transfer failed (%d)\n", (int)transfer);
++            free(response->content); free(response); free(request);
++            return NULL;
++        }
+ 
+-		if (strstr(response->content, "MESSAGE=SUCCESS")) {
++		if ((!secure || transfer == CURLE_OK) && strstr(response->content, "MESSAGE=SUCCESS")) {
+ 			status_code = 0;
+ 			debug("response successfully received\n");
+ 			break;
+@@ -2007,3 +2031,14 @@ void tss_set_debug_level(int level)
+ {
+ 	debug_level = level;
+ }
++
++/* Explicit verified-HTTPS entry point for identity-bearing T1 requests. */
++plist_t tss_request_send_secure(plist_t request, const char *server_url)
++{
++    return tss_request_send_internal(request, server_url, 1);
++}
++
++plist_t tss_request_send(plist_t request, const char *server_url)
++{
++    return tss_request_send_internal(request, server_url, 0);
++}
+diff --git a/tests/secure_transport.c b/tests/secure_transport.c
+new file mode 100644
+index 0000000..68f1d2a
+--- /dev/null
++++ b/tests/secure_transport.c
+@@ -0,0 +1,90 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Exercise the real sender with a mock transfer. No network operations.
++ */
++#include <assert.h>
++#include <stdarg.h>
++#include <string.h>
++#include <curl/curl.h>
++#include <libtatsu/tss.h>
++
++static curl_write_callback writer;
++static void *writer_data;
++static int transfers, fail_option;
++static CURLcode transfer_result;
++static long peer, host, redirects, connect_timeout, timeout;
++static int protocols, redirect_protocols, apple_url;
++
++CURLcode __real_curl_easy_setopt(CURL *, CURLoption, ...);
++CURLcode __wrap_curl_easy_setopt(CURL *handle, CURLoption option, ...)
++{
++    va_list args;
++    va_start(args, option);
++    CURLcode result;
++    if (option < CURLOPTTYPE_OBJECTPOINT) {
++        long value = va_arg(args, long);
++        switch (option) {
++        case CURLOPT_SSL_VERIFYPEER: peer = value; break;
++        case CURLOPT_SSL_VERIFYHOST: host = value; break;
++        case CURLOPT_FOLLOWLOCATION: redirects = value; break;
++        case CURLOPT_CONNECTTIMEOUT: connect_timeout = value; break;
++        case CURLOPT_TIMEOUT: timeout = value; break;
++        default: break;
++        }
++        result = __real_curl_easy_setopt(handle, option, value);
++    } else if (option == CURLOPT_WRITEFUNCTION) {
++        writer = va_arg(args, curl_write_callback);
++        result = __real_curl_easy_setopt(handle, option, writer);
++    } else {
++        void *value = va_arg(args, void *);
++        switch (option) {
++        case CURLOPT_WRITEDATA: writer_data = value; break;
++        case CURLOPT_PROTOCOLS_STR: protocols = !strcmp(value, "https"); break;
++        case CURLOPT_REDIR_PROTOCOLS_STR: redirect_protocols = !strcmp(value, "https"); break;
++        case CURLOPT_URL: apple_url = !strcmp(value, "https://gs.apple.com/TSS/controller?action=2"); break;
++        default: break;
++        }
++        result = fail_option && option == CURLOPT_PROTOCOLS_STR ? CURLE_UNKNOWN_OPTION :
++            __real_curl_easy_setopt(handle, option, value);
++    }
++    va_end(args);
++    return result;
++}
++
++CURLcode __wrap_curl_easy_perform(CURL *handle)
++{
++    (void)handle;
++    transfers++;
++    assert(peer == 1 && host == 2 && redirects == 0);
++    assert(connect_timeout == 15 && timeout == 60);
++    assert(protocols && redirect_protocols && apple_url);
++    /* Even a partial response claiming success must fail on a transport error. */
++    char response[] = "STATUS=0&MESSAGE=SUCCESS&REQUEST_STRING="
++        "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>"
++        "<key>TestFixture</key><true/></dict></plist>";
++    assert(writer(response, 1, strlen(response), writer_data) == strlen(response));
++    return transfer_result;
++}
++
++int main(void)
++{
++    plist_t request = plist_new_dict();
++    const char *rejected[] = {"http://gs.apple.com/TSS/controller?action=2",
++        "https://example.com/", "https://gs.apple.com.example.com/"};
++    for (unsigned int i = 0; i < sizeof(rejected)/sizeof(*rejected); i++)
++        assert(!tss_request_send_secure(request, rejected[i]));
++    assert(transfers == 0);
++    fail_option = 1;
++    assert(!tss_request_send_secure(request, NULL));
++    assert(transfers == 0);
++    fail_option = 0;
++    transfer_result = CURLE_PEER_FAILED_VERIFICATION;
++    assert(!tss_request_send_secure(request, NULL));
++    assert(transfers == 1);
++    transfer_result = CURLE_OK;
++    plist_t result = tss_request_send_secure(request, NULL);
++    assert(result && plist_dict_get_item(result, "TestFixture"));
++    assert(transfers == 2);
++    plist_free(result);
++    plist_free(request);
++    return 0;
++}
+diff --git a/tests/test_secure_transport.sh b/tests/test_secure_transport.sh
+new file mode 100644
+index 0000000..95a9335
+--- /dev/null
++++ b/tests/test_secure_transport.sh
+@@ -0,0 +1,12 @@
++#!/bin/sh
++set -eu
++cd "$(dirname "$0")/.."
++test_binary=$(mktemp /tmp/tss-transport-test.XXXXXX)
++trap 'rm -f "$test_binary"' EXIT HUP INT TERM
++cc -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
++  -fsanitize=undefined -fno-sanitize-recover=all -Wl,--gc-sections \
++  -Wl,--wrap=curl_easy_setopt -Wl,--wrap=curl_easy_perform \
++  -Iinclude -Isrc src/tss.c tests/secure_transport.c \
++  $(pkg-config --cflags --libs libplist-2.0 libcurl) -o "$test_binary"
++"$test_binary"
++echo 'Verified HTTPS policy, rejected endpoints, option failure and transfer failure: passed (mock transport).'
+-- 
+2.55.0
+

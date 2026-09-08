@@ -1,0 +1,238 @@
+From 2e1e606fd1599c4eecca40f69885a663f64acbcf Mon Sep 17 00:00:00 2001
+From: Kerim Incedayi <k@kerim.me>
+Date: Tue, 8 Sep 2026 12:16:57 +0200
+Subject: [PATCH] Fix T1 identifier parsing and document live preflight and
+ ramdisk rejection
+
+---
+ docs/T1-EXPERIMENTAL.md | 44 ++++++++++++++++++++++++++++++-----------
+ scripts/t1-run.py       |  2 +-
+ src/idevicerestore.c    |  6 +++++-
+ src/t1.c                | 14 +++++++++----
+ tests/test_t1.py        | 20 +++++++++++++++++++
+ 5 files changed, 69 insertions(+), 17 deletions(-)
+
+diff --git a/docs/T1-EXPERIMENTAL.md b/docs/T1-EXPERIMENTAL.md
+index 57ca1b2..7a674e9 100644
+--- a/docs/T1-EXPERIMENTAL.md
++++ b/docs/T1-EXPERIMENTAL.md
+@@ -1,7 +1,8 @@
+ # Experimental T1 EmbeddedOS support (Linux only)
+ 
+ This is a new implementation based on the public runbook, **not** the author's
+-unpublished patch and **not yet validated on hardware**:
++unpublished patch. **Hardware preflight passed; provisioning is blocked at the
++restore ramdisk command**:
+ https://gist.github.com/tigercosmos/ecbfe1fc20b7303c1808d3ab74af1f5b
+ 
+ Scope is deliberately restricted to x619ap, chip 0x8002, board 0x12, Image4-capable
+@@ -27,6 +28,10 @@ Implemented:
+ - T1 signing uses the accompanying libtatsu verified-HTTPS API, restricted to
+   https://gs.apple.com/TSS/controller?action=2 with certificate/hostname checking,
+   no redirects or HTTP fallback, bounded timeouts, and failure on transport errors.
++  The tool includes Apple's public Root CA for this connection only. The CA was
++  downloaded over normally verified HTTPS from Apple's PKI link and its DER
++  SHA-256 checked: b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024.
++  No system-wide certificate trust change or disabled verification is required.
+ 
+ - Identity/build restriction and explicit ECID selection; validate the physical
+   recovery device and restored HardwareInfo against the selected chip/board/ECID.
+@@ -72,15 +77,16 @@ privately as unhandled-message.plist. No acknowledgement is sent for rejected
+ stores. This is not proof that every valid T1 FDR message is supported.
+ 
+ The iBEC → restore-ramdisk flow reuses upstream component personalization, with a
+-fresh TSS request after re-enumeration. Its timing and signing behavior have not
+-been observed on this T1. The strict supported-message list may reject additional
++fresh TSS request after re-enumeration. iBEC upload, recovery re-enumeration and
++subsequent signing succeeded on this T1. The restore ramdisk command was rejected
++with `Ramdisk image not valid`; the restored session was never reached. The strict supported-message list may reject additional
+ legitimate messages; review the private evidence before adding support.
+ 
+ The installed libimobiledevice 1.4.0 provides reverse-proxy APIs and protocol
+ versions 2/1 are attempted. No extra reverse-proxy patch was invented: the report
+ mentions patched support without publishing its details. FDR connectivity and
+-Apple service acceptance are still unverified. No actual FDR data or signing
+-request was generated during development.
++Apple FDR service acceptance are still unverified. Apple signing and local image
++construction passed on hardware, but no FDR data has been generated.
+ 
+ The generic restore helpers used for NOR/FUD still have upstream behavior and
+ parsers. These patches do not claim a security audit of the whole toolchain.
+@@ -182,10 +188,14 @@ with this T1's ECID; debug, custom signing servers, erase, keep-personalized, ig
+ errors and other generic restore flags are rejected. The executable creates no
+ host disk targets and accepts no block-device restore destination.
+ 
+-Before pass A/B, a reviewed private usbmuxd instance must own the mux socket with
++Before pass A/B, a reviewed private usbmuxd instance must own the selected mux socket with
+ `USBMUXD_T1_RECOVERY=1`; the system instance must not compete. The patch changes
+ only the opt-in libusb device-class filter; product-ID and mux-interface checks
+-remain. This broader discovery applies to Apple's matching product IDs, so detach
++remain. The tested setup used an isolated root-private UNIX socket, passed as
++`-S /private/path/mux.sock` to usbmuxd and
++`USBMUXD_SOCKET_ADDRESS=UNIX:/private/path/mux.sock` to the launcher. Its config,
++PID handling and logs were isolated too; no system daemon was installed or
++replaced. The daemon was stopped after the attempt. This broader discovery applies to Apple's matching product IDs, so detach
+ unrelated Apple devices during a future experiment.
+ 
+ Between successful passes and before replay, wait at least ten seconds. Any
+@@ -199,11 +209,22 @@ with failed internal storage remains unverified even in the original report.
+ ## Development result
+ 
+ Patched libirecovery, libtatsu, usbmuxd and idevicerestore compiled locally.
+-All 22 idevicerestore offline tests and the libtatsu mock-transport test passed.
++All 24 idevicerestore offline tests and the libtatsu mock-transport test passed.
+ Earlier gcc static analysis with strict warnings passed for the initial T1 C
+ modules. The compiled inspection mode accepted the checksum-verified Apple
+-package's x619ap 14Y901 resources. No live signing, provisioning, FDR, memboot or
+-Touch Bar test has been performed with these patches.
++package's x619ap 14Y901 resources. The live preflight passed after correcting the
++ECID argument format and supplying Apple's official CA to the signing connection.
++One provision attempt loaded iBEC and obtained a fresh ticket, then stopped at
++`ramdisk`; its private console reported `Ramdisk image not valid`. The original
++restore ramdisk SHA-384 and its digest in the Apple ticket match the manifest.
++The precise reason for device rejection remains unresolved; no further uploads
++were attempted. No restored session, NORData request, FDR generation or phase-14
++memboot occurred. The saved pair remains incomplete and cannot be replayed.
++
++The test sent `setenv auto-boot false` and `saveenv` to the T1 before the ramdisk
++failure. This is T1 state, distinct from the unchanged Linux boot configuration.
++No previous value was captured, so automatic reversal would be a guess. The T1
++remains in 05ac:1281 recovery. No personalized image was installed on EFI.
+ 
+ The separate USB was formatted for a private live file backup of home, /etc and
+ /boot, with partition metadata, the Linux encryption header and package list.
+@@ -216,7 +237,8 @@ The local ACPI table defines the T1 reset method at
+ `\_SB.PCI0.XHC1.RHUB.ASOC.FRST`: it toggles EC.SOCR with 15 ms and 600 ms waits,
+ and has no explicit Return. The accompanying acpi_call patch handles a successful
+ method with no output object instead of dereferencing NULL. It compiled against
+-the running kernel; the module has not been loaded and FRST has not been called.
++the running kernel; the module was loaded and unloaded successfully without
++calling FRST. No reset was performed.
+ Verification of this table is specific to this machine, not permission to call
+ the same method on arbitrary models. T1 already enumerates in recovery here, so
+ no reset is needed for preflight.
+diff --git a/scripts/t1-run.py b/scripts/t1-run.py
+index d6dc31a..645bf46 100644
+--- a/scripts/t1-run.py
++++ b/scripts/t1-run.py
+@@ -55,7 +55,7 @@ def main():
+         env['IDEVICERESTORE_T1_PRIVATE'] = str(args.private)
+         if args.fdr_input:
+             env['IDEVICERESTORE_T1_FDR_INPUT_DIR'] = str(args.fdr_input)
+-        command += ['-i', format(select_ecid(), 'x')]
++        command += ['-i', hex(select_ecid())]
+     command.append(str(args.firmware.resolve()))
+     # ECID stays out of console output. Root/process monitors can still see argv.
+     try:
+diff --git a/src/idevicerestore.c b/src/idevicerestore.c
+index c68c3b6..dcfbdd5 100644
+--- a/src/idevicerestore.c
++++ b/src/idevicerestore.c
+@@ -1909,7 +1909,11 @@ int main(int argc, char* argv[])
+ 					client->ecid = 0;
+ 				}
+ 				if (client->ecid == 0) {
+-					logger(LL_ERROR, "Could not parse ECID from '%s'\n", optarg);
++					if (t1_requested()) {
++                    logger(LL_ERROR, "Could not parse T1 ECID\n");
++                } else {
++                    logger(LL_ERROR, "Could not parse ECID from '%s'\n", optarg);
++                }
+ 					return EXIT_FAILURE;
+ 				}
+ 			}
+diff --git a/src/t1.c b/src/t1.c
+index 66e5985..1171ae3 100644
+--- a/src/t1.c
++++ b/src/t1.c
+@@ -59,8 +59,11 @@ static int strict_command(irecv_client_t r, const char *cmd, int breq)
+     if (global_quit_flag) return -1;
+     size_t size = strlen(cmd) + 1;
+     if (size > 256) return -1;
+-    return irecv_usb_control_transfer(r, 0x40, breq, 0, 0,
+-        (unsigned char *)cmd, size, 10000) == (int)size ? 0 : -1;
++    int transferred = irecv_usb_control_transfer(r, 0x40, breq, 0, 0,
++        (unsigned char *)cmd, size, 10000);
++    if (transferred != (int)size)
++        fprintf(stderr, "T1 command %s: transferred=%d expected=%zu\n", cmd, transferred, size);
++    return transferred == (int)size ? 0 : -1;
+ }
+ 
+ static int send_component_command(struct idevicerestore_client_t *c,
+@@ -151,9 +154,9 @@ static plist_t capture_pair(struct idevicerestore_client_t *c, plist_t identity)
+ 
+ int t1_preflight(struct idevicerestore_client_t *c, plist_t identity, int fd)
+ {
+-    if (fresh_tss(c, identity)) return -1;
++    if (fresh_tss(c, identity)) { status("preflight signing failed; no firmware uploaded"); return -1; }
+     plist_t pair = capture_pair(c, identity);
+-    if (!pair) return -1;
++    if (!pair) { status("preflight image validation failed; no firmware uploaded"); return -1; }
+     int rc = save_plist(fd, "preflight-only.plist", pair);
+     plist_free(pair);
+     if (!rc) status("preflight passed: Apple ticket and local image validated; no firmware uploaded");
+@@ -369,6 +372,8 @@ int t1_start(struct idevicerestore_client_t *c)
+     }
+     close(logfd);
+     mode_t previous_umask = umask(077);
++    /* Signing diagnostics stay behind the private stdout/stderr redirection. */
++    tss_set_debug_level(1);
+     int rc = -1; plist_t pair = NULL, input = NULL;
+     status("experimental mode; logs are private");
+     if (input_path) {
+@@ -426,6 +431,7 @@ int t1_start(struct idevicerestore_client_t *c)
+     fflush(NULL);
+     dup2(status_fd, STDOUT_FILENO); dup2(saved_err, STDERR_FILENO);
+     close(status_fd); status_fd = -1; close(saved_err); close(fd);
++    tss_set_debug_level(0);
+     umask(previous_umask);
+     return rc;
+ }
+diff --git a/tests/test_t1.py b/tests/test_t1.py
+index 6594cc5..001673e 100644
+--- a/tests/test_t1.py
++++ b/tests/test_t1.py
+@@ -8,6 +8,8 @@ import plistlib
+ import subprocess
+ import tempfile
+ import unittest
++import importlib.util
++from unittest import mock
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ WORK = ROOT.parents[1]
+@@ -208,6 +210,18 @@ class PreflightOnly(unittest.TestCase):
+             self.assertFalse((dest/'preflight.plist').exists())
+             self.assertFalse((dest/'FDRData').exists())
+ 
++class Launcher(unittest.TestCase):
++    def test_explicit_hex_ecid_is_accepted_by_base_zero_parser(self):
++        spec=importlib.util.spec_from_file_location('t1_launcher',ROOT/'scripts/t1-run.py')
++        launcher=importlib.util.module_from_spec(spec);spec.loader.exec_module(launcher)
++        argv=['t1-run.py','preflight','/fixture','--prefix',str(PREFIX),'--private','/private']
++        with mock.patch('sys.argv',argv),mock.patch.object(launcher,'select_ecid',return_value=0x123abcd), \
++             mock.patch.object(launcher.os,'geteuid',return_value=0), \
++             mock.patch.object(launcher.subprocess,'run',return_value=mock.Mock(returncode=0)) as run:
++            self.assertEqual(launcher.main(),0)
++        command=run.call_args.args[0]
++        self.assertEqual(int(command[command.index('-i')+1],0),0x123abcd)
++
+ class CommandLine(unittest.TestCase):
+     def setUp(self):
+         self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)
+@@ -229,6 +243,12 @@ class CommandLine(unittest.TestCase):
+     def test_inspect_compiled_binary(self):
+         result=self.run_cli();self.assertEqual(result.returncode,0,result.stderr)
+         self.assertIn('offline inspection passed',result.stdout)
++    def test_bad_ecid_is_not_echoed(self):
++        value="123abcd-invalid-fixture"
++        result=self.run_cli(["-i",value])
++        self.assertNotEqual(result.returncode,0)
++        self.assertNotIn(value,result.stdout+result.stderr)
++        self.assertIn("Could not parse T1 ECID",result.stdout+result.stderr)
+     def test_reject_missing_component(self):
+         (self.path/'SEP.im4p').unlink()
+         self.assertNotEqual(self.run_cli().returncode,0)
+-- 
+2.55.0
+

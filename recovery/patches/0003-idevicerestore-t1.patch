@@ -1,0 +1,1264 @@
+From ce34d3c7e33602ebfa9294f6466ea27b67ee73cc Mon Sep 17 00:00:00 2001
+From: Kerim Incedayi <k@kerim.me>
+Date: Tue, 8 Sep 2026 11:33:42 +0200
+Subject: [PATCH] Add isolated experimental x619ap EmbeddedOS recovery and
+ replay path
+
+---
+ Makefile.am             |   2 +
+ docs/T1-EXPERIMENTAL.md | 172 +++++++++++++++++
+ scripts/t1-run.py       |  68 +++++++
+ src/Makefile.am         |   1 +
+ src/idevicerestore.c    |  12 +-
+ src/t1.c                | 415 ++++++++++++++++++++++++++++++++++++++++
+ src/t1.h                |  23 +++
+ src/t1_policy.c         | 246 ++++++++++++++++++++++++
+ tests/test_t1.py        | 220 +++++++++++++++++++++
+ 9 files changed, 1158 insertions(+), 1 deletion(-)
+ create mode 100644 docs/T1-EXPERIMENTAL.md
+ create mode 100644 scripts/t1-run.py
+ create mode 100644 src/t1.c
+ create mode 100644 src/t1.h
+ create mode 100644 src/t1_policy.c
+ create mode 100644 tests/test_t1.py
+
+diff --git a/Makefile.am b/Makefile.am
+index efaae8e..4996e97 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -3,6 +3,8 @@ ACLOCAL_AMFLAGS = -I m4
+ SUBDIRS = src docs
+ 
+ EXTRA_DIST = \
++	tests/test_t1.py \
++	scripts/t1-run.py \
+ 	docs \
+ 	README.md \
+ 	git-version-gen
+diff --git a/docs/T1-EXPERIMENTAL.md b/docs/T1-EXPERIMENTAL.md
+new file mode 100644
+index 0000000..a427502
+--- /dev/null
++++ b/docs/T1-EXPERIMENTAL.md
+@@ -0,0 +1,172 @@
++# Experimental T1 EmbeddedOS support (Linux only)
++
++This is a new implementation based on the public runbook, **not** the author's
++unpublished patch and **not yet validated on hardware**:
++https://gist.github.com/tigercosmos/ecbfe1fc20b7303c1808d3ab74af1f5b
++
++Scope is deliberately restricted to x619ap, chip 0x8002, board 0x12, Image4-capable
++T1 recovery USB 05ac:1281, EmbeddedOS 3.0 build 14Y901. This branch was built on
++Omarchy/Arch, Linux 7.1.9, gcc 16.2.1. It does not implement Touch Bar HID drivers.
++
++## Implementation
++
++`t1.c` is an independent entry point selected before the generic restore logic.
++`t1_policy.c` contains the offline-testable policy, private storage, bounded DER
++parser, and phase-14 command sequence. Ordinary invocation retains upstream
++behavior; any `IDEVICERESTORE_T1_` variable routes into validation and cannot fall
++through to a generic restore. **Do not copy the gist's shell commands unchanged.**
++This implementation uses the explicit modes below and rejects legacy research
++variables. Its image/ticket interface intentionally uses a single binary-plist
++bundle to prevent mixing separate files from different personalization requests.
++
++Implemented:
++
++- Identity/build restriction and explicit ECID selection; validate the physical
++  recovery device and restored HardwareInfo against the selected chip/board/ECID.
++- Phase 11 bypasses OS/filesystem extraction and generic partition restore options.
++  Options set ApBootstrapOnly=false, PersonalizedDuringPreflight=true,
++  FlashNOR=true, ShouldRestoreSystemImage=false, CreateFilesystemPartitions=false,
++  UpdateBaseband=false. SystemImage, RootToInstall and BootImageTagOverride absent.
++- Only NORData, RootTicket, FDRTrustData, FDRMemoryCommit and FUDData accepted.
++  Unsupported messages, asynchronous requests and alternate data ports stop the
++  session. No filesystem or baseband request reaches a generic handler.
++- FDR commit writes a binary plist atomically before acknowledging the request;
++  input FDR is added as FDRMemoryStoreData in the RootTicket reply. Input directory
++  must contain provenance from the same ECID. Replay output is compared using
++  binary serialization. Different ordering may cause a conservative rejection.
++- A fresh TSS response after iBEC is used both for restored and for preflight
++  capture. The four personalized IMG4 objects are concatenated in the order
++  OSRamdisk, KernelCache, DeviceTree, SEP with no padding or 2GMI header.
++- Every saved object's DER structure/tag and embedded ticket are checked. The
++  bundle is atomically saved before phase 11; it is marked complete only after
++  successful final status, FDR commit, and (for pass B) matching FDR replay.
++- Phase 14 requires a completed pass-B bundle, matching ECID, and a minimum
++  ten-second wait. It never requests a new ticket or uploads iBEC. It sends
++  auto-boot=false, saveenv, saved ticket, ticket command, saved image,
++  boot-args=rd=md0, then memboot with USB bRequest=1.
++- T1 commands check the actual USB control-transfer length. The upstream helper
++  discards that result; it is not used for T1 command dispatch. A disconnect
++  during a boot command can therefore conservatively be reported as failure.
++- Live modes require root and a pre-existing root-owned mode-0700 directory.
++  Private files use mode 0600, exclusive creation/atomic replacement, no symlink
++  traversal, no special files or hardlinks. Raw stdout/stderr go into a private
++  log; only fixed status messages and whitelisted request names reach the console.
++  A fresh directory is required for each provision attempt. Replay log is also
++  exclusive: an existing log blocks accidental repeat dispatch.
++
++## Remaining protocol uncertainties
++
++The runbook supplies no FDRMemoryCommit wire capture. This implementation accepts
++one nonempty dictionary under FDRMemoryStore or FDRMemoryStoreData, at the request
++root or under Arguments, and acknowledges with an empty dictionary. **These
++message envelopes and ACK semantics are inferred and unverified.** Missing,
++ambiguous, differently typed, or empty stores cause a stop with the message saved
++privately as unhandled-message.plist. No acknowledgement is sent for rejected
++stores. This is not proof that every valid T1 FDR message is supported.
++
++The iBEC → restore-ramdisk flow reuses upstream component personalization, with a
++fresh TSS request after re-enumeration. Its timing and signing behavior have not
++been observed on this T1. The strict supported-message list may reject additional
++legitimate messages; review the private evidence before adding support.
++
++The installed libimobiledevice 1.4.0 provides reverse-proxy APIs and protocol
++versions 2/1 are attempted. No extra reverse-proxy patch was invented: the report
++mentions patched support without publishing its details. FDR connectivity and
++Apple service acceptance are still unverified. No actual FDR data or signing
++request was generated during development.
++
++The generic restore helpers used for NOR/FUD still have upstream behavior and
++parsers. These patches do not claim a security audit of the whole toolchain.
++Offline tests establish specific host-side checks, not firmware safety or success.
++Do not infer a successful boot from a zero phase-14 dispatch exit status.
++
++## Build in a local prefix
++
++Build the accompanying libirecovery and usbmuxd patches first. Do not install
++this experimental stack into /usr or replace the system usbmuxd service.
++Dependencies on Arch are already available in this development environment:
++autoconf, automake, libtool, pkgconf, libusb, libimobiledevice-glue, libplist,
++libtatsu, libimobiledevice, libusbmuxd, libzip, curl and zlib.
++
++```sh
++T1_WORK=/absolute/path/to/t1-recovery
++T1_PREFIX="$T1_WORK/prefix"
++export PKG_CONFIG_PATH="$T1_PREFIX/lib/pkgconfig"
++export LD_LIBRARY_PATH="$T1_PREFIX/lib"
++# In patched libirecovery:
++./autogen.sh --prefix="$T1_PREFIX" --without-udev
++make -j4 && make install
++# In patched usbmuxd (build only, use src/usbmuxd directly):
++./autogen.sh --prefix="$T1_PREFIX" --without-systemd
++make -j4
++# In patched idevicerestore:
++./autogen.sh --prefix="$T1_PREFIX"
++make -j4
++python3 tests/test_t1.py
++```
++
++The tests compile the actual C policy with UndefinedBehaviorSanitizer and strict
++warnings. Synthetic fixtures exercise identity checks, excluded restore options,
++request restrictions, exact replay ordering, each simulated transport failure,
++wrong/incomplete pairs, mismatched tickets/tags, truncated DER, private file
++permissions, unsafe file types and FDR persistence/rejection. No test opens USB,
++contacts Apple, starts usbmuxd, changes drivers, or writes firmware.
++
++## Offline inspection
++
++Download the generic package directly from Apple and verify the SHA-256 before
++extracting. The existing local inspect-firmware.py helper records the exact URL
++and digest. This branch's inspection mode checks the manifest identity and the
++presence of required components, **not** the cryptographic authenticity of every
++extracted file. Apple's secure boot remains responsible for accepting signatures.
++
++```sh
++IDEVICERESTORE_T1_MODE=inspect \
++  src/idevicerestore /path/to/iBridge1_1Customer.bundle/Contents/Resources
++```
++
++This mode needs neither root nor a connected T1. It must succeed before any live
++attempt. It does not create the generic restore log.
++
++## Live-mode interface for a supervised experiment
++
++These are development interfaces, not a tested end-user installation recipe.
++Use the local launcher in the patch bundle to supply the ECID internally rather
++than pasting it into public terminal output. Never share private logs or artifacts.
++
++Environment controls (all other IDEVICERESTORE variables are rejected):
++
++- `IDEVICERESTORE_T1_MODE`: inspect, provision, or replay.
++- `IDEVICERESTORE_T1_PRIVATE`: existing absolute root-owned mode-0700 directory.
++- `IDEVICERESTORE_T1_FDR_INPUT_DIR`: optional previous successful pass-A directory,
++  containing FDRData and device.plist; only used in provision mode (pass B).
++
++Pass A: provision into a new private directory, without input FDR. Pass B:
++provision into another new directory, using pass A as the input. Replay: use the
++pass-B directory and no FDR input variable. Each live invocation requires `-i`
++with this T1's ECID; debug, custom signing servers, erase, keep-personalized, ignore
++errors and other generic restore flags are rejected. The executable creates no
++host disk targets and accepts no block-device restore destination.
++
++Before pass A/B, a reviewed private usbmuxd instance must own the mux socket with
++`USBMUXD_T1_RECOVERY=1`; the system instance must not compete. The patch changes
++only the opt-in libusb device-class filter; product-ID and mux-interface checks
++remain. This broader discovery applies to Apple's matching product IDs, so detach
++unrelated Apple devices during a future experiment.
++
++Between successful passes and before replay, wait at least ten seconds. Any
++necessary T1 reset is a separate operation: only verified ASOC.FRST, never SOCW(1).
++The tool deliberately performs no ACPI reset, reboot, service stop/start, driver
++installation, EFI staging, or automatic retry. Stop the private mux daemon before
++phase 14. After dispatch, observe stable 05ac:8600 and test display/input/webcam.
++Only then consider staging the exact image on EFI. Persistence on an external SSD
++with failed internal storage remains unverified even in the original report.
++
++## Development result
++
++All three patches compiled locally. All 21 offline tests passed; gcc static analysis
++with strict warnings passed for both new C modules. The
++compiled inspection mode accepted the checksum-verified Apple package's x619ap
++14Y901 resources. No live recovery, provisioning, FDR, memboot, or Touch Bar test
++has been performed with these patches. The previous working audio DKMS package,
++keyboard/trackpad, host partitions and boot configuration are unchanged.
+diff --git a/scripts/t1-run.py b/scripts/t1-run.py
+new file mode 100644
+index 0000000..39000a3
+--- /dev/null
++++ b/scripts/t1-run.py
+@@ -0,0 +1,68 @@
++#!/usr/bin/env python3
++"""Launch the experimental T1 branch without printing unique device fields.
++
++This script does not elevate privileges, manage usbmuxd, reset T1, or stage EFI.
++"""
++import argparse
++import os
++from pathlib import Path
++import re
++import subprocess
++
++
++def select_ecid():
++    model = Path('/sys/class/dmi/id/product_name').read_text().strip()
++    if model != 'MacBookPro13,2':
++        raise SystemExit('This experimental launcher is restricted to MacBookPro13,2.')
++    matches = []
++    for device in Path('/sys/bus/usb/devices').iterdir():
++        try:
++            if (device/'idVendor').read_text().strip() != '05ac' or (device/'idProduct').read_text().strip() != '1281':
++                continue
++            descriptor = (device/'serial').read_text()
++        except FileNotFoundError:
++            continue
++        fields = {k: int(v, 16) for k, v in re.findall(r'\b(CPID|BDID|ECID):([0-9A-Fa-f]+)\b', descriptor)}
++        if fields.get('CPID') == 0x8002 and fields.get('BDID') == 0x12 and fields.get('ECID'):
++            matches.append(fields['ECID'])
++    if len(matches) != 1:
++        raise SystemExit('Expected exactly one matching T1 in recovery; no command was sent.')
++    return matches[0]
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('mode', choices=['inspect', 'provision', 'replay'])
++    parser.add_argument('firmware', type=Path, help='Extracted EmbeddedOS Contents/Resources')
++    parser.add_argument('--prefix', type=Path, required=True, help='Local prefix containing patched libirecovery')
++    parser.add_argument('--binary', type=Path, default=Path(__file__).resolve().parents[1]/'src/idevicerestore')
++    parser.add_argument('--private', type=Path)
++    parser.add_argument('--fdr-input', type=Path)
++    args = parser.parse_args()
++    if args.mode == 'inspect' and (args.private or args.fdr_input):
++        parser.error('inspect accepts no private artifact directories')
++    if args.mode == 'replay' and args.fdr_input:
++        parser.error('replay accepts only the completed pass-B directory')
++    env = {k:v for k,v in os.environ.items() if not k.startswith('IDEVICERESTORE_') and k != 'LD_PRELOAD'}
++    env['LD_LIBRARY_PATH'] = str(args.prefix.resolve()/'lib')
++    env['IDEVICERESTORE_T1_MODE'] = args.mode
++    command = [str(args.binary.resolve())]
++    if args.mode != 'inspect':
++        if os.geteuid() != 0 or not args.private:
++            parser.error('live modes require root and --private pointing to an existing root-owned 0700 directory')
++        if not args.private.is_absolute() or (args.fdr_input and not args.fdr_input.is_absolute()):
++            parser.error('private directory paths must be absolute')
++        env['IDEVICERESTORE_T1_PRIVATE'] = str(args.private)
++        if args.fdr_input:
++            env['IDEVICERESTORE_T1_FDR_INPUT_DIR'] = str(args.fdr_input)
++        command += ['-i', format(select_ecid(), 'x')]
++    command.append(str(args.firmware.resolve()))
++    # ECID stays out of console output. Root/process monitors can still see argv.
++    try:
++        return subprocess.run(command, env=env, check=False).returncode
++    except OSError:
++        raise SystemExit('Could not launch the selected binary; check its path and build.') from None
++
++
++if __name__ == '__main__':
++    raise SystemExit(main())
+diff --git a/src/Makefile.am b/src/Makefile.am
+index c61dfd7..c607b65 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -32,6 +32,7 @@ idevicerestore_SOURCES = \
+ 	log.c log.h \
+ 	endianness.h \
+ 	common.c common.h \
++	t1.c t1.h t1_policy.c \
+ 	fls.c fls.h \
+ 	mbn.c mbn.h \
+ 	img3.c img3.h \
+diff --git a/src/idevicerestore.c b/src/idevicerestore.c
+index 11d7ec4..38257f0 100644
+--- a/src/idevicerestore.c
++++ b/src/idevicerestore.c
+@@ -361,8 +361,13 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
+ 
+ int build_identity_check_components_in_ipsw(plist_t build_identity, ipsw_archive_t ipsw);
+ 
++#include "t1.h"
++
+ int idevicerestore_start(struct idevicerestore_client_t* client)
+ {
++	if (t1_requested()) {
++		return t1_start(client);
++	}
+ 	int tss_enabled = 0;
+ 	int result = 0;
+ 
+@@ -2033,7 +2038,12 @@ int main(int argc, char* argv[])
+ 		return EXIT_FAILURE;
+ 	}
+ 
+-	if (!logfile) {
++	if (t1_requested()) {
++		if (logfile) {
++			fprintf(stderr, "T1 mode manages its own private log; omit --logfile.\n");
++			return EXIT_FAILURE;
++		}
++	} else if (!logfile) {
+ 		char logfn[256];
+ 		int64_t timestamp = time(NULL);
+ 		if (client->ecid) {
+diff --git a/src/t1.c b/src/t1.c
+new file mode 100644
+index 0000000..84ecbac
+--- /dev/null
++++ b/src/t1.c
+@@ -0,0 +1,415 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Independent implementation of the experimental x619ap/14Y901 runbook.
++ * Not the author's unpublished patch. Hardware validation remains required.
++ */
++#include "t1.h"
++#include "recovery.h"
++#include "restore.h"
++#include "ipsw.h"
++#include <libtatsu/tss.h>
++#include <libimobiledevice/reverse_proxy.h>
++#include <fcntl.h>
++#include <stdatomic.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdio.h>
++#include <time.h>
++#include <sys/stat.h>
++
++extern char **environ;
++static int status_fd = -1;
++static void status(const char *s) { if (status_fd >= 0) dprintf(status_fd, "T1: %s\n", s); }
++
++int t1_requested(void)
++{
++    for (char **p = environ; p && *p; p++)
++        if (!strncmp(*p, "IDEVICERESTORE_T1_", 18)) return 1;
++    return 0;
++}
++
++static plist_t read_plist(int fd, const char *name)
++{
++    void *data = NULL; size_t size = 0; plist_t p = NULL;
++    if (!t1_read_private(fd, name, &data, &size)) {
++        if (size >= 8 && !memcmp(data, "bplist00", 8)) plist_from_bin(data, size, &p);
++        free(data);
++    }
++    return p;
++}
++
++static int save_plist(int fd, const char *name, plist_t p)
++{
++    char *data = NULL; uint32_t size = 0;
++    plist_to_bin(p, &data, &size);
++    int rc = t1_atomic_write(fd, name, data, size);
++    plist_mem_free(data);
++    return rc;
++}
++
++static int send_dict(struct idevicerestore_client_t *c, plist_t p)
++{
++    int rc = restored_send(c->restore->client, p) == RESTORE_E_SUCCESS ? 0 : -1;
++    plist_free(p);
++    return rc;
++}
++
++/* Upstream's raw command helper discards the USB transfer result. */
++static int strict_command(irecv_client_t r, const char *cmd, int breq)
++{
++    if (global_quit_flag) return -1;
++    size_t size = strlen(cmd) + 1;
++    if (size > 256) return -1;
++    return irecv_usb_control_transfer(r, 0x40, breq, 0, 0,
++        (unsigned char *)cmd, size, 10000) == (int)size ? 0 : -1;
++}
++
++static int send_component_command(struct idevicerestore_client_t *c,
++                                  plist_t identity, const char *component_name, const char *cmd)
++{
++    return recovery_send_component(c, identity, component_name) ||
++        strict_command(c->recovery->client, cmd, 0) ? -1 : 0;
++}
++
++static int open_recovery(struct idevicerestore_client_t *c)
++{
++    irecv_client_t r = NULL;
++    if (irecv_open_with_ecid(&r, c->ecid) != IRECV_E_SUCCESS) return -1;
++    const struct irecv_device_info *d = irecv_get_device_info(r);
++    int mode = 0;
++    irecv_get_mode(r, &mode);
++    if (!d || d->ecid != c->ecid || d->cpid != 0x8002 || d->bdid != 0x12 ||
++        mode != IRECV_K_RECOVERY_MODE_2 || !(d->ibfl & IBOOT_FLAG_IMAGE4_AWARE)) {
++        irecv_close(r); return -1;
++    }
++    c->recovery = calloc(1, sizeof(*c->recovery));
++    if (!c->recovery) { irecv_close(r); return -1; }
++    c->recovery->client = r;
++    c->image4supported = 1;
++    c->mode = MODE_RECOVERY;
++    if (irecv_devices_get_device_by_client(r, &c->device) != IRECV_E_SUCCESS ||
++        !c->device || strcmp(c->device->hardware_model, "x619ap")) {
++        recovery_client_free(c); return -1;
++    }
++    return 0;
++}
++
++static int fresh_tss(struct idevicerestore_client_t *c, plist_t identity)
++{
++    const struct irecv_device_info *d = irecv_get_device_info(c->recovery->client);
++    if (!d || !d->ap_nonce || !d->ap_nonce_size || !d->sep_nonce || !d->sep_nonce_size) return -1;
++    free(c->nonce);
++    c->nonce = malloc(d->ap_nonce_size);
++    if (!c->nonce) return -1;
++    memcpy(c->nonce, d->ap_nonce, d->ap_nonce_size);
++    c->nonce_size = d->ap_nonce_size;
++    plist_free(c->tss); c->tss = NULL;
++    return get_tss_response(c, identity, &c->tss);
++}
++
++static int component(struct idevicerestore_client_t *c, plist_t identity,
++                     const char *name, void **data, size_t *size)
++{
++    char *path = NULL; void *raw = NULL; size_t raw_size = 0;
++    *data = NULL; *size = 0;
++    if (build_identity_get_component_path(identity, name, &path)) return -1;
++    int rc = extract_component(c->ipsw, path, &raw, &raw_size);
++    free(path);
++    if (rc) return -1;
++    rc = personalize_component(c, name, raw, raw_size, c->tss, data, size);
++    free(raw);
++    return rc || !*data || !*size ? -1 : 0;
++}
++
++static plist_t capture_pair(struct idevicerestore_client_t *c, plist_t identity)
++{
++    const char *names[] = {"OSRamdisk", "KernelCache", "DeviceTree", "SEP"};
++    unsigned char *ticket = NULL; unsigned int ticket_len = 0;
++    if (tss_response_get_ap_img4_ticket(c->tss, &ticket, &ticket_len) || !ticket_len) return NULL;
++    void *image = NULL; size_t image_len = 0;
++    for (int i = 0; i < 4; i++) {
++        void *data = NULL; size_t size = 0;
++        if (component(c, identity, names[i], &data, &size) || size > 64 * 1024 * 1024 ||
++            image_len + size > 96 * 1024 * 1024) { free(data); free(image); free(ticket); return NULL; }
++        void *next = realloc(image, image_len + size);
++        if (!next) { free(data); free(image); free(ticket); return NULL; }
++        image = next;
++        memcpy((char *)image + image_len, data, size); image_len += size;
++        free(data);
++    }
++    plist_t p = plist_new_dict();
++    plist_dict_set_item(p, "FormatVersion", plist_new_uint(1));
++    plist_dict_set_item(p, "ECID", plist_new_uint(c->ecid));
++    plist_dict_set_item(p, "Model", plist_new_string("x619ap"));
++    plist_dict_set_item(p, "Build", plist_new_string("14Y901"));
++    plist_dict_set_item(p, "Image", plist_new_data(image, image_len));
++    plist_dict_set_item(p, "Ticket", plist_new_data((char *)ticket, ticket_len));
++    plist_dict_set_item(p, "RestoreFinished", plist_new_bool(0));
++    free(image); free(ticket);
++    if (t1_validate_pair(p, c->ecid)) { plist_free(p); return NULL; }
++    return p;
++}
++
++struct events { uint64_t ecid; atomic_int removed; atomic_int returned; };
++static void event_cb(const irecv_device_event_t *event, void *user)
++{
++    struct events *s = user;
++    if (!event->device_info || event->device_info->ecid != s->ecid) return;
++    if (event->type == IRECV_DEVICE_REMOVE) atomic_store(&s->removed, 1);
++    if (event->type == IRECV_DEVICE_ADD && atomic_load(&s->removed)) atomic_store(&s->returned, 1);
++}
++
++static int boot_ibec(struct idevicerestore_client_t *c, plist_t identity)
++{
++    struct events s = {.ecid = c->ecid};
++    irecv_device_event_context_t ctx = NULL;
++    if (irecv_device_event_subscribe(&ctx, event_cb, &s) != IRECV_E_SUCCESS) return -1;
++    int rc = recovery_send_component(c, identity, "iBEC");
++    if (!rc) rc = strict_command(c->recovery->client, "go", 1);
++    recovery_client_free(c);
++    for (int i = 0; !rc && !atomic_load(&s.returned) && i < 60; i++) {
++        if (c->flags & FLAG_QUIT) { rc = -1; break; }
++        sleep(1);
++    }
++    if (!atomic_load(&s.returned)) rc = -1;
++    irecv_device_event_unsubscribe(ctx);
++    return rc ? -1 : open_recovery(c);
++}
++
++static int boot_restore(struct idevicerestore_client_t *c, plist_t identity)
++{
++    if (strict_command(c->recovery->client, "setenv auto-boot false", 0) ||
++        strict_command(c->recovery->client, "saveenv", 0) ||
++        send_component_command(c, identity, "RestoreRamDisk", "ramdisk") ||
++        send_component_command(c, identity, "RestoreDeviceTree", "devicetree") ||
++        send_component_command(c, identity, "RestoreSEP", "rsepfirmware") ||
++        recovery_send_component(c, identity, "RestoreKernelCache")) return -1;
++    irecv_client_t r = c->recovery->client;
++    if (strict_command(r, "setenv boot-args rd=md0 -restore IOUSBDeviceController-configuration=standardMuxOnly", 0) ||
++        strict_command(r, "bootx", 1)) return -1;
++    recovery_client_free(c);
++    for (int i = 0; i < 120 && !(c->flags & FLAG_QUIT); i++) {
++        if (!restore_check_mode(c)) { c->mode = MODE_RESTORE; return 0; }
++        sleep(1);
++    }
++    return -1;
++}
++
++static int root_ticket(struct idevicerestore_client_t *c, plist_t fdr)
++{
++    plist_t ticket = plist_dict_get_item(c->tss, "ApImg4Ticket");
++    if (!PLIST_IS_DATA(ticket)) return -1;
++    plist_t reply = plist_new_dict();
++    plist_dict_set_item(reply, "RootTicketData", plist_copy(ticket));
++    if (fdr) plist_dict_set_item(reply, "FDRMemoryStoreData", plist_copy(fdr));
++    return send_dict(c, reply);
++}
++
++static int restore_session(struct idevicerestore_client_t *c, plist_t identity, int fd, plist_t input)
++{
++    if (restore_open_with_timeout(c)) return -1;
++    c->restore->build_identity = identity;
++    plist_t hw = NULL;
++    int valid = restored_query_value(c->restore->client, "HardwareInfo", &hw) == RESTORE_E_SUCCESS &&
++        plist_dict_get_uint(hw, "ChipID") == 0x8002 && plist_dict_get_uint(hw, "BoardID") == 0x12 &&
++        plist_dict_get_uint(hw, "UniqueChipID") == c->ecid;
++    plist_free(hw);
++    if (!valid) return -1;
++    reverse_proxy_client_t proxy = NULL;
++    int proxy_ok = 0;
++    for (int version = 2; version >= 1; version--) {
++        if (reverse_proxy_client_create_with_port(c->restore->device, &proxy, REVERSE_PROXY_DEFAULT_PORT) == REVERSE_PROXY_E_SUCCESS &&
++            reverse_proxy_client_start_proxy(proxy, version) == REVERSE_PROXY_E_SUCCESS) { proxy_ok = 1; break; }
++        if (proxy) reverse_proxy_client_free(proxy);
++        proxy = NULL;
++    }
++    if (!proxy_ok) return -1;
++    plist_t opts = t1_restore_options();
++    int rc = -1, commits = 0;
++    if (restored_start_restore(c->restore->client, opts, c->restore->protocol_version) != RESTORE_E_SUCCESS) goto done;
++    status("phase 11 started; firmware-only restore");
++    time_t deadline = time(NULL) + 15 * 60;
++    while (!(c->flags & FLAG_QUIT) && time(NULL) < deadline) {
++        plist_t msg = NULL;
++        restored_error_t err = restored_receive(c->restore->client, &msg);
++#ifdef HAVE_RESTORE_E_RECEIVE_TIMEOUT
++        if (err == RESTORE_E_RECEIVE_TIMEOUT) { plist_free(msg); continue; }
++#endif
++        if (err != RESTORE_E_SUCCESS || !PLIST_IS_DICT(msg)) { plist_free(msg); break; }
++        const char *type = plist_get_string_ptr(plist_dict_get_item(msg, "MsgType"), NULL);
++        int result = -1, finished = 0;
++        if (type && !strcmp(type, "DataRequestMsg")) {
++            const char *request = plist_get_string_ptr(plist_dict_get_item(msg, "DataType"), NULL);
++            if (t1_request_allowed(request) && !plist_dict_get_item(msg, "DataPort")) {
++                status(request);
++                if (!strcmp(request, "FDRMemoryCommit")) {
++                    result = t1_fdr_commit(fd, msg);
++                    if (!result) { commits++; result = send_dict(c, plist_new_dict()); }
++                } else if (!strcmp(request, "RootTicket")) result = root_ticket(c, input);
++                else result = restore_handle_data_request_msg(c, msg);
++            }
++        } else if (type && !strcmp(type, "StatusMsg")) {
++            plist_t code = plist_dict_get_item(msg, "Status");
++            plist_t amr = plist_dict_get_item(msg, "AMRError");
++            if (PLIST_IS_UINT(code) && plist_dict_get_uint(msg, "Status") == 0 &&
++                (!amr || PLIST_IS_UINT(amr)) &&
++                plist_dict_get_uint(msg, "AMRError") == 0 && commits > 0) {
++                plist_t ack = plist_new_dict();
++                plist_dict_set_item(ack, "MsgType", plist_new_string("ReceivedFinalStatusMsg"));
++                result = send_dict(c, ack); finished = !result;
++            }
++        } else if (type && !strcmp(type, "ProgressMsg")) {
++            result = 0;
++        } else if (type && !strcmp(type, "CheckpointMsg")) {
++            plist_t code = plist_dict_get_item(msg, "CHECKPOINT_RESULT");
++            int64_t n = -1;
++            if (PLIST_IS_INT(code)) plist_get_int_val(code, &n);
++            result = n == 0 ? 0 : -1;
++        } else if (type && !strcmp(type, "PreviousRestoreLogMsg")) {
++            /* Diagnostic text is never needed to advance the restore. */
++            result = 0;
++        }
++        if (result) {
++            /* Retain unknown messages privately for schema review; do not ACK. */
++            save_plist(fd, "unhandled-message.plist", msg);
++            status("stopped on an error or unsupported message; private evidence saved");
++        }
++        plist_free(msg);
++        if (result) break;
++        if (finished) { rc = 0; break; }
++    }
++ done:
++    plist_free(opts);
++    reverse_proxy_client_free(proxy);
++    return rc;
++}
++
++static int replay_command(void *r, const char *cmd, int breq)
++{
++    return strict_command(r, cmd, breq);
++}
++
++static int replay_buffer(void *r, const void *data, size_t size)
++{
++    if (global_quit_flag) return -1;
++    return irecv_send_buffer(r, (unsigned char *)data, size, 0) == IRECV_E_SUCCESS ? 0 : -1;
++}
++
++static int replay(struct idevicerestore_client_t *c, int fd)
++{
++    plist_t pair = read_plist(fd, "preflight.plist");
++    int rc = t1_replay_dispatch(pair, c->ecid, time(NULL), c->recovery->client,
++                                replay_command, replay_buffer);
++    if (!rc) status("phase 14 dispatched; this does not prove the T1 booted");
++    plist_free(pair);
++    return rc;
++}
++
++int t1_start(struct idevicerestore_client_t *c)
++{
++    const char *mode = getenv("IDEVICERESTORE_T1_MODE");
++    const char *private_path = getenv("IDEVICERESTORE_T1_PRIVATE");
++    const char *input_path = getenv("IDEVICERESTORE_T1_FDR_INPUT_DIR");
++    if (!c || !mode || (strcmp(mode, "inspect") && strcmp(mode, "provision") && strcmp(mode, "replay"))) {
++        fprintf(stderr, "T1 requires IDEVICERESTORE_T1_MODE=inspect|provision|replay. Legacy research flags are unsupported.\n"); return -1;
++    }
++    /* Reject misspelled or inherited research controls, rather than ignore them. */
++    const char *allowed[] = {"IDEVICERESTORE_T1_MODE=", "IDEVICERESTORE_T1_PRIVATE=", "IDEVICERESTORE_T1_FDR_INPUT_DIR=", NULL};
++    for (char **p = environ; p && *p; p++) {
++        if (strncmp(*p, "IDEVICERESTORE_", 15)) continue;
++        int ok = 0;
++        for (int i = 0; allowed[i]; i++) if (!strncmp(*p, allowed[i], strlen(allowed[i]))) ok = 1;
++        if (!ok) { fprintf(stderr, "Unsupported IDEVICERESTORE environment control.\n"); return -1; }
++    }
++    if (!c->ipsw || c->debug_level || c->tss_url || c->udid ||
++        (c->restore_variant && strcmp(c->restore_variant, "Customer Boot")) ||
++        (c->flags & ~(FLAG_INTERACTIVE | FLAG_IN_PROGRESS))) {
++        fprintf(stderr, "T1 rejects generic restore/debug/custom-server options.\n"); return -1;
++    }
++    int enabled = 0;
++    if (ipsw_extract_build_manifest(c->ipsw, &c->build_manifest, &enabled)) return -1;
++    plist_t identity = build_manifest_get_build_identity_for_model_with_variant(c->build_manifest, "x619ap", "Customer Boot", 1);
++    if (!t1_identity_valid(c->build_manifest, identity)) { fprintf(stderr, "T1 firmware identity rejected.\n"); return -1; }
++    const char *required[] = {"iBEC", "LLB", "iBoot", "OSRamdisk", "KernelCache", "DeviceTree", "SEP", "RestoreRamDisk", "RestoreKernelCache", "RestoreDeviceTree", "RestoreSEP", NULL};
++    for (int i = 0; required[i]; i++) {
++        char *path = NULL;
++        if (build_identity_get_component_path(identity, required[i], &path)) return -1;
++        int present = path[0] != '/' && !strstr(path, "..") && ipsw_file_exists(c->ipsw, path);
++        free(path);
++        if (!present) { fprintf(stderr, "T1 firmware component missing.\n"); return -1; }
++    }
++    if (!strcmp(mode, "inspect")) {
++        puts("T1 offline inspection passed: x619ap, 14Y901; required components present. No USB/network operations."); return 0;
++    }
++    if (geteuid() != 0 || !c->ecid || !private_path || (!strcmp(mode, "replay") && input_path)) {
++        fprintf(stderr, "T1 live modes require root, explicit -i ECID, and a private directory; replay uses only its captured pair.\n"); return -1;
++    }
++    int fd = t1_private_open(private_path);
++    if (fd < 0) { fprintf(stderr, "T1 private directory must exist, be owned by root, mode 0700, without symlinks.\n"); return -1; }
++    const char *logname = !strcmp(mode, "replay") ? "replay.private.log" : "provision.private.log";
++    int logfd = openat(fd, logname, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
++    status_fd = dup(STDOUT_FILENO);
++    if (logfd < 0 || status_fd < 0) { if (logfd >= 0) close(logfd); close(fd); if (status_fd >= 0) close(status_fd); status_fd = -1; return -1; }
++    fflush(NULL);
++    int saved_err = dup(STDERR_FILENO);
++    if (saved_err < 0 || dup2(logfd, STDOUT_FILENO) < 0 || dup2(logfd, STDERR_FILENO) < 0) {
++        if (saved_err >= 0) { dup2(saved_err, STDERR_FILENO); close(saved_err); }
++        dup2(status_fd, STDOUT_FILENO); close(status_fd); status_fd = -1; close(logfd); close(fd); return -1;
++    }
++    close(logfd);
++    mode_t previous_umask = umask(077);
++    int rc = -1; plist_t pair = NULL, input = NULL;
++    status("experimental mode; logs are private");
++    if (input_path) {
++        int in = t1_private_open(input_path);
++        if (in < 0) goto done;
++        plist_t provenance = read_plist(in, "device.plist");
++        input = read_plist(in, "FDRData");
++        close(in);
++        int same = provenance && plist_dict_get_uint(provenance, "ECID") == c->ecid;
++        plist_free(provenance);
++        if (!same || !PLIST_IS_DICT(input) || !plist_dict_get_size(input)) goto done;
++    }
++    if (open_recovery(c)) { status("target rejected or not in T1 recovery"); goto done; }
++    if (!strcmp(mode, "replay")) { rc = replay(c, fd); goto done; }
++    plist_t provenance = plist_new_dict();
++    plist_dict_set_item(provenance, "ECID", plist_new_uint(c->ecid));
++    int saved = save_plist(fd, "device.plist", provenance);
++    plist_free(provenance);
++    if (saved) goto done;
++    build_manifest_get_version_information(c->build_manifest, c);
++    c->parameters = plist_new_dict();
++    tss_parameters_add_from_manifest(c->parameters, identity, true);
++    if (fresh_tss(c, identity) || boot_ibec(c, identity) || fresh_tss(c, identity)) goto done;
++    pair = capture_pair(c, identity);
++    if (!pair || save_plist(fd, "preflight.plist", pair)) goto done;
++    status("saved matching personalized image and ticket; restore still pending");
++    if (boot_restore(c, identity) || restore_session(c, identity, fd, input)) goto done;
++    if (input) {
++        plist_t output = read_plist(fd, "FDRData");
++        char *ib = NULL, *ob = NULL; uint32_t il = 0, ol = 0;
++        plist_to_bin(input, &ib, &il);
++        if (output) plist_to_bin(output, &ob, &ol);
++        int same = ib && ob && il == ol && !memcmp(ib, ob, il);
++        plist_mem_free(ib); plist_mem_free(ob);
++        plist_free(output);
++        if (!same) { status("FDR replay differs; phase 14 disabled"); goto done; }
++    }
++    plist_dict_set_item(pair, "RestoreFinished", plist_new_bool(1));
++    plist_dict_set_item(pair, "FDRReplayed", plist_new_bool(input != NULL));
++    plist_dict_set_item(pair, "FinishedAt", plist_new_uint(time(NULL)));
++    if (save_plist(fd, "preflight.plist", pair)) goto done;
++    status("phase 11 finished; no reset, reboot, or EFI staging performed");
++    rc = 0;
++ done:
++    recovery_client_free(c);
++    restore_client_free(c);
++    plist_free(pair); plist_free(input);
++    plist_free(c->parameters); c->parameters = NULL;
++    plist_free(c->tss); c->tss = NULL;
++    if (rc) status("operation stopped; examine the private log before retrying");
++    fflush(NULL);
++    dup2(status_fd, STDOUT_FILENO); dup2(saved_err, STDERR_FILENO);
++    close(status_fd); status_fd = -1; close(saved_err); close(fd);
++    umask(previous_umask);
++    return rc;
++}
+diff --git a/src/t1.h b/src/t1.h
+new file mode 100644
+index 0000000..7961c51
+--- /dev/null
++++ b/src/t1.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#ifndef IDEVICERESTORE_T1_H
++#define IDEVICERESTORE_T1_H
++#include "common.h"
++
++/* Independent experimental entry point; never falls back to generic restore. */
++int t1_requested(void);
++int t1_start(struct idevicerestore_client_t *client);
++plist_t t1_restore_options(void);
++int t1_identity_valid(plist_t manifest, plist_t identity);
++int t1_request_allowed(const char *type);
++int t1_private_open(const char *path);
++int t1_atomic_write(int dirfd, const char *name, const void *data, size_t size);
++int t1_read_private(int dirfd, const char *name, void **data, size_t *size);
++int t1_fdr_commit(int dirfd, plist_t message);
++int t1_validate_pair(plist_t pair, uint64_t ecid);
++int t1_validate_img4(const void *data, size_t size, const char *tag,
++                     const void *ticket, size_t ticket_size);
++typedef int (*t1_command_fn)(void *, const char *, int);
++typedef int (*t1_buffer_fn)(void *, const void *, size_t);
++int t1_replay_dispatch(plist_t pair, uint64_t ecid, uint64_t now, void *transport,
++                       t1_command_fn command, t1_buffer_fn buffer);
++#endif
+diff --git a/src/t1_policy.c b/src/t1_policy.c
+new file mode 100644
+index 0000000..927280a
+--- /dev/null
++++ b/src/t1_policy.c
+@@ -0,0 +1,246 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Experimental T1 policy, private storage and bounded IMG4 validation.
++ * No USB or network access in this translation unit.
++ */
++#include "t1.h"
++#include <errno.h>
++#include <fcntl.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdio.h>
++#include <sys/stat.h>
++
++#define T1_MAX_FILE (128u * 1024u * 1024u)
++
++static int string_is(plist_t p, const char *s)
++{
++    return PLIST_IS_STRING(p) && !strcmp(plist_get_string_ptr(p, NULL), s);
++}
++
++int t1_identity_valid(plist_t manifest, plist_t identity)
++{
++    return string_is(plist_dict_get_item(manifest, "ProductVersion"), "3.0") &&
++        string_is(plist_dict_get_item(manifest, "ProductBuildVersion"), "14Y901") &&
++        string_is(plist_access_path(identity, 2, "Info", "DeviceClass"), "x619ap") &&
++        string_is(plist_access_path(identity, 2, "Info", "Variant"), "Customer Boot") &&
++        plist_dict_get_uint(identity, "ApChipID") == 0x8002 &&
++        plist_dict_get_uint(identity, "ApBoardID") == 0x12 &&
++        !plist_dict_get_item(manifest, "SupportedProductTypes") &&
++        !plist_dict_get_item(plist_dict_get_item(identity, "Manifest"), "OS");
++}
++
++int t1_request_allowed(const char *type)
++{
++    static const char *allowed[] = {"NORData", "RootTicket", "FDRTrustData",
++                                   "FDRMemoryCommit", "FUDData", NULL};
++    for (int i = 0; type && allowed[i]; i++)
++        if (!strcmp(type, allowed[i])) return 1;
++    return 0;
++}
++
++plist_t t1_restore_options(void)
++{
++    plist_t p = plist_new_dict();
++    plist_dict_set_item(p, "ApBootstrapOnly", plist_new_bool(0));
++    plist_dict_set_item(p, "PersonalizedDuringPreflight", plist_new_bool(1));
++    plist_dict_set_item(p, "FlashNOR", plist_new_bool(1));
++    plist_dict_set_item(p, "ShouldRestoreSystemImage", plist_new_bool(0));
++    plist_dict_set_item(p, "CreateFilesystemPartitions", plist_new_bool(0));
++    plist_dict_set_item(p, "UpdateBaseband", plist_new_bool(0));
++    plist_dict_set_item(p, "RestoreBootArgs", plist_new_string(
++        "rd=md0 -restore IOUSBDeviceController-configuration=standardMuxOnly"));
++    return p;
++}
++
++static int filename_valid(const char *name)
++{
++    return name && *name && strlen(name) < 160 && !strchr(name, '/') &&
++        strcmp(name, ".") && strcmp(name, "..");
++}
++
++int t1_private_open(const char *path)
++{
++    /* Walk each component without following symlinks, including ancestors. */
++    if (!path || path[0] != '/') return -1;
++    char *copy = strdup(path), *save = NULL;
++    if (!copy) return -1;
++    int fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
++    for (char *p = strtok_r(copy, "/", &save); fd >= 0 && p;
++         p = strtok_r(NULL, "/", &save)) {
++        if (!strcmp(p, ".") || !strcmp(p, "..")) { close(fd); fd = -1; break; }
++        int next = openat(fd, p, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++        close(fd);
++        fd = next;
++    }
++    free(copy);
++    struct stat st;
++    if (fd >= 0 && (fstat(fd, &st) || st.st_uid != geteuid() || (st.st_mode & 0777) != 0700)) {
++        close(fd);
++        fd = -1;
++    }
++    return fd;
++}
++
++int t1_atomic_write(int dirfd, const char *name, const void *data, size_t size)
++{
++    if (!filename_valid(name) || !data || !size || size > T1_MAX_FILE) return -1;
++    struct stat st;
++    if (!fstatat(dirfd, name, &st, AT_SYMLINK_NOFOLLOW)) {
++        if (!S_ISREG(st.st_mode) || st.st_uid != geteuid() || st.st_nlink != 1 ||
++            (st.st_mode & 0777) != 0600) return -1;
++    } else if (errno != ENOENT) return -1;
++    static unsigned sequence;
++    char tmp[200];
++    snprintf(tmp, sizeof(tmp), ".%s.%ld.%u.tmp", name, (long)getpid(), sequence++);
++    int fd = openat(dirfd, tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
++    if (fd < 0) return -1;
++    size_t offset = 0;
++    int rc = -1;
++    while (offset < size) {
++        ssize_t n = write(fd, (const char *)data + offset, size - offset);
++        if (n < 0 && errno == EINTR) continue;
++        if (n <= 0) goto done;
++        offset += n;
++    }
++    if (fsync(fd)) goto done;
++    if (close(fd)) { fd = -1; goto done; }
++    fd = -1;
++    if (renameat(dirfd, tmp, dirfd, name) || fsync(dirfd)) goto done;
++    rc = 0;
++ done:
++    if (fd >= 0) close(fd);
++    if (rc) unlinkat(dirfd, tmp, 0);
++    return rc;
++}
++
++int t1_read_private(int dirfd, const char *name, void **data, size_t *size)
++{
++    *data = NULL; *size = 0;
++    if (!filename_valid(name)) return -1;
++    int fd = openat(dirfd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
++    struct stat st;
++    if (fd < 0) return -1;
++    if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
++        st.st_nlink != 1 || (st.st_mode & 0777) != 0600 ||
++        st.st_size <= 0 || st.st_size > T1_MAX_FILE) { close(fd); return -1; }
++    char *buf = malloc(st.st_size);
++    if (!buf) { close(fd); return -1; }
++    size_t off = 0;
++    while (off < (size_t)st.st_size) {
++        ssize_t n = read(fd, buf + off, st.st_size - off);
++        if (n < 0 && errno == EINTR) continue;
++        if (n <= 0) { free(buf); close(fd); return -1; }
++        off += n;
++    }
++    char extra;
++    if (read(fd, &extra, 1) != 0) { free(buf); close(fd); return -1; }
++    close(fd);
++    *data = buf; *size = off;
++    return 0;
++}
++
++int t1_fdr_commit(int dirfd, plist_t message)
++{
++    /* The runbook does not publish a wire capture. These two explicitly named
++     * store envelopes are provisional; reject absent/ambiguous/empty stores.
++     * Never mistake the complete request envelope for device FDR data. */
++    plist_t store = NULL;
++    const char *keys[] = {"FDRMemoryStore", "FDRMemoryStoreData"};
++    for (int level = 0; level < 2; level++) {
++        plist_t parent = level ? plist_dict_get_item(message, "Arguments") : message;
++        for (int k = 0; k < 2; k++) {
++            plist_t candidate = plist_dict_get_item(parent, keys[k]);
++            if (candidate) {
++                if (store || !PLIST_IS_DICT(candidate) || !plist_dict_get_size(candidate)) return -1;
++                store = candidate;
++            }
++        }
++    }
++    if (!store) return -1;
++    char *bin = NULL; uint32_t len = 0;
++    plist_to_bin(store, &bin, &len);
++    int rc = t1_atomic_write(dirfd, "FDRData", bin, len);
++    plist_mem_free(bin);
++    return rc;
++}
++
++/* Definite DER lengths only, with bounds checked before every read. */
++static int der(const unsigned char **cursor, const unsigned char *end,
++               unsigned char tag, const unsigned char **value, size_t *size)
++{
++    const unsigned char *p = *cursor;
++    if (end - p < 2 || *p++ != tag) return -1;
++    size_t n = *p++;
++    if (n & 0x80) {
++        size_t count = n & 0x7f;
++        if (!count || count > 4 || (size_t)(end - p) < count || !*p) return -1;
++        n = 0;
++        while (count--) n = (n << 8) | *p++;
++        if (n < 128) return -1;
++    }
++    if (n > (size_t)(end - p)) return -1;
++    *value = p; *size = n; *cursor = p + n;
++    return 0;
++}
++
++static int der_text(const unsigned char **p, const unsigned char *end, const char *s)
++{
++    const unsigned char *v; size_t n;
++    return der(p, end, 0x16, &v, &n) || n != strlen(s) || memcmp(v, s, n) ? -1 : 0;
++}
++
++int t1_validate_img4(const void *data, size_t size, const char *tag,
++                     const void *ticket, size_t ticket_size)
++{
++    if (!data || !size || size > T1_MAX_FILE || !ticket || !ticket_size) return -1;
++    const unsigned char *p = data, *end = p + size, *v; size_t n;
++    if (der(&p, end, 0x30, &v, &n) || p != end) return -1;
++    p = v; end = v + n;
++    if (der_text(&p, end, "IMG4") || der(&p, end, 0x30, &v, &n)) return -1;
++    const unsigned char *payload = v, *payload_end = v + n;
++    if (der_text(&payload, payload_end, "IM4P") || der_text(&payload, payload_end, tag)) return -1;
++    if (der(&p, end, 0xa0, &v, &n) || n != ticket_size || memcmp(v, ticket, n)) return -1;
++    /* This T1 format uses no IM4R/nonce-slot trailer. */
++    return p == end ? 0 : -1;
++}
++
++int t1_validate_pair(plist_t pair, uint64_t ecid)
++{
++    if (!PLIST_IS_DICT(pair) || !ecid || plist_dict_get_uint(pair, "ECID") != ecid ||
++        plist_dict_get_uint(pair, "FormatVersion") != 1 ||
++        !string_is(plist_dict_get_item(pair, "Build"), "14Y901") ||
++        !string_is(plist_dict_get_item(pair, "Model"), "x619ap")) return -1;
++    uint64_t image_len = 0, ticket_len = 0;
++    const char *image = plist_get_data_ptr(plist_dict_get_item(pair, "Image"), &image_len);
++    const char *ticket = plist_get_data_ptr(plist_dict_get_item(pair, "Ticket"), &ticket_len);
++    if (!image || !ticket || !image_len || image_len > T1_MAX_FILE || !ticket_len || ticket_len > 1024 * 1024) return -1;
++    const unsigned char *p = (const unsigned char *)image, *end = p + image_len;
++    const char *tags[] = {"osrd", "krnl", "dtre", "sepi"};
++    for (int i = 0; i < 4; i++) {
++        const unsigned char *start = p, *v; size_t n;
++        if (der(&p, end, 0x30, &v, &n) || t1_validate_img4(start, p - start, tags[i], ticket, ticket_len)) return -1;
++    }
++    return p == end ? 0 : -1;
++}
++
++int t1_replay_dispatch(plist_t pair, uint64_t ecid, uint64_t now, void *transport,
++                       t1_command_fn command, t1_buffer_fn buffer)
++{
++    /* Validate all artifacts before the first device mutation. No fresh TSS. */
++    if (!command || !buffer || t1_validate_pair(pair, ecid) ||
++        !PLIST_IS_BOOLEAN(plist_dict_get_item(pair, "RestoreFinished")) ||
++        !PLIST_IS_BOOLEAN(plist_dict_get_item(pair, "FDRReplayed")) ||
++        !plist_dict_get_bool(pair, "RestoreFinished") ||
++        !plist_dict_get_bool(pair, "FDRReplayed")) return -1;
++    uint64_t finished = plist_dict_get_uint(pair, "FinishedAt");
++    if (!finished || now < finished || now - finished < 10) return -1;
++    uint64_t tn = 0, in = 0;
++    const void *ticket = plist_get_data_ptr(plist_dict_get_item(pair, "Ticket"), &tn);
++    const void *image = plist_get_data_ptr(plist_dict_get_item(pair, "Image"), &in);
++    if (command(transport, "setenv auto-boot false", 0) ||
++        command(transport, "saveenv", 0) || buffer(transport, ticket, tn) ||
++        command(transport, "ticket", 0) || buffer(transport, image, in) ||
++        command(transport, "setenv boot-args rd=md0", 0) ||
++        command(transport, "memboot", 1)) return -1;
++    return 0;
++}
+diff --git a/tests/test_t1.py b/tests/test_t1.py
+new file mode 100644
+index 0000000..ad080c8
+--- /dev/null
++++ b/tests/test_t1.py
+@@ -0,0 +1,220 @@
++#!/usr/bin/env python3
++"""Offline tests of the actual C policy and replay dispatch; no USB/network."""
++import copy
++import ctypes as C
++import os
++from pathlib import Path
++import plistlib
++import subprocess
++import tempfile
++import unittest
++
++ROOT = Path(__file__).resolve().parents[1]
++WORK = ROOT.parents[1]
++PREFIX = WORK / 'prefix'
++BUILD = tempfile.TemporaryDirectory(prefix='t1-tests-')
++env = dict(os.environ, PKG_CONFIG_PATH=str(PREFIX / 'lib/pkgconfig'))
++flags = subprocess.check_output(['pkg-config', '--cflags', '--libs', 'libplist-2.0', 'libirecovery-1.0', 'libimobiledevice-glue-1.0'], env=env, text=True).split()
++so = Path(BUILD.name) / 'policy.so'
++subprocess.run(['cc', '-shared', '-Wl,--as-needed', '-fPIC', '-Wall', '-Wextra', '-Werror', '-fsanitize=undefined', '-fno-sanitize-recover=all', '-I'+str(ROOT/'src'), str(ROOT/'src/t1_policy.c'), '-o', str(so), *flags], check=True)
++lib = C.CDLL(str(so))
++p = C.CDLL('libplist-2.0.so')
++p.plist_from_bin.argtypes = [C.c_char_p, C.c_uint32, C.POINTER(C.c_void_p)]
++p.plist_free.argtypes = [C.c_void_p]
++p.plist_to_bin.argtypes = [C.c_void_p, C.POINTER(C.c_void_p), C.POINTER(C.c_uint32)]
++p.plist_mem_free.argtypes = [C.c_void_p]
++lib.t1_identity_valid.argtypes = [C.c_void_p, C.c_void_p]
++lib.t1_request_allowed.argtypes = [C.c_char_p]
++lib.t1_restore_options.restype = C.c_void_p
++lib.t1_private_open.argtypes = [C.c_char_p]
++lib.t1_atomic_write.argtypes = [C.c_int, C.c_char_p, C.c_void_p, C.c_size_t]
++lib.t1_read_private.argtypes = [C.c_int, C.c_char_p, C.POINTER(C.c_void_p), C.POINTER(C.c_size_t)]
++lib.t1_fdr_commit.argtypes = [C.c_int, C.c_void_p]
++lib.t1_validate_pair.argtypes = [C.c_void_p, C.c_uint64]
++COMMAND = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_char_p, C.c_int)
++BUFFER = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_void_p, C.c_size_t)
++lib.t1_replay_dispatch.argtypes = [C.c_void_p, C.c_uint64, C.c_uint64, C.c_void_p, COMMAND, BUFFER]
++
++class Plist:
++    def __init__(self, obj):
++        raw = plistlib.dumps(obj, fmt=plistlib.FMT_BINARY, sort_keys=False)
++        self.ptr = C.c_void_p()
++        p.plist_from_bin(raw, len(raw), C.byref(self.ptr))
++        assert self.ptr
++    def __enter__(self): return self.ptr
++    def __exit__(self, *args): p.plist_free(self.ptr)
++
++def decode(ptr):
++    out = C.c_void_p(); size = C.c_uint32()
++    p.plist_to_bin(ptr, C.byref(out), C.byref(size))
++    data = C.string_at(out, size.value)
++    p.plist_mem_free(out)
++    return plistlib.loads(data)
++
++def der(tag, data):
++    n = len(data)
++    size = bytes([n]) if n < 128 else bytes([0x80+(n.bit_length()+7)//8])+n.to_bytes((n.bit_length()+7)//8, 'big')
++    return bytes([tag])+size+data
++
++def text(s): return der(0x16, s.encode())
++TICKET = der(0x30, text('IM4M') + der(0x04, b'synthetic ticket'))
++def image(tag, ticket=TICKET):
++    payload = der(0x30, text('IM4P')+text(tag)+text('test')+der(0x04, b'test payload'))
++    return der(0x30, text('IMG4')+payload+der(0xa0, ticket))
++def pair():
++    return {'FormatVersion':1, 'ECID':123, 'Build':'14Y901', 'Model':'x619ap',
++            'Ticket':TICKET, 'Image':b''.join(image(t) for t in ('osrd','krnl','dtre','sepi')),
++            'RestoreFinished':True, 'FDRReplayed':True, 'FinishedAt':100}
++
++def dispatch(obj, fail_at=None, now=110):
++    calls=[]
++    def cmd(_, name, breq):
++        calls.append(('command',name.decode(),breq))
++        return -1 if len(calls)==fail_at else 0
++    def buf(_, data, size):
++        calls.append(('buffer',C.string_at(data,size)))
++        return -1 if len(calls)==fail_at else 0
++    with Plist(obj) as ptr:
++        rc=lib.t1_replay_dispatch(ptr,123,now,None,COMMAND(cmd),BUFFER(buf))
++    return rc,calls
++
++class T1Policy(unittest.TestCase):
++    def test_firmware_identity(self):
++        m={'ProductVersion':'3.0','ProductBuildVersion':'14Y901','BuildIdentities':[{'ApChipID':'0x8002','ApBoardID':'0x12','Info':{'DeviceClass':'x619ap','Variant':'Customer Boot'},'Manifest':{}}]}
++        with Plist(m) as a, Plist(m['BuildIdentities'][0]) as b:
++            self.assertEqual(lib.t1_identity_valid(a,b),1)
++        for key,value in [('ApBoardID','0x13'),('ApChipID','0x8010')]:
++            ident=copy.deepcopy(m['BuildIdentities'][0]);ident[key]=value
++            with Plist(m) as a, Plist(ident) as b:self.assertEqual(lib.t1_identity_valid(a,b),0)
++        for key,value in [('ProductVersion','4.0'),('ProductBuildVersion','other')]:
++            bad=copy.deepcopy(m);bad[key]=value
++            with Plist(bad) as a, Plist(m['BuildIdentities'][0]) as b:self.assertEqual(lib.t1_identity_valid(a,b),0)
++    def test_restore_options(self):
++        ptr=lib.t1_restore_options(); opts=decode(ptr);p.plist_free(ptr)
++        for key in ['ApBootstrapOnly','ShouldRestoreSystemImage','CreateFilesystemPartitions','UpdateBaseband']:
++            self.assertIs(opts[key],False)
++        self.assertIs(opts['PersonalizedDuringPreflight'],True)
++        self.assertIs(opts['FlashNOR'],True)
++        for key in ['SystemImage','RootToInstall','BootImageTagOverride']:self.assertNotIn(key,opts)
++        self.assertNotIn('nand-enable-reformat',opts['RestoreBootArgs'])
++    def test_request_allowlist(self):
++        for name in ['NORData','RootTicket','FDRTrustData','FDRMemoryCommit','FUDData']:
++            self.assertEqual(lib.t1_request_allowed(name.encode()),1)
++        for name in [None,b'',b'SystemImageData',b'BasebandData',b'RootToInstall',b'Unknown',b'URLAsset']:
++            self.assertEqual(lib.t1_request_allowed(name),0)
++    def test_exact_replay_order(self):
++        obj=pair();rc,calls=dispatch(obj)
++        self.assertEqual(rc,0)
++        self.assertEqual(calls,[('command','setenv auto-boot false',0),('command','saveenv',0),
++             ('buffer',TICKET),('command','ticket',0),('buffer',obj['Image']),
++             ('command','setenv boot-args rd=md0',0),('command','memboot',1)])
++    def test_stop_on_every_transport_failure(self):
++        for n in range(1,8):
++            with self.subTest(step=n):
++                rc,calls=dispatch(pair(),fail_at=n)
++                self.assertEqual(rc,-1);self.assertEqual(len(calls),n)
++    def test_no_io_for_wrong_or_incomplete_pair(self):
++        for key,value in [('ECID',456),('Build','bad'),('Model','x619dev'),('FormatVersion',2),
++                          ('RestoreFinished',False),('FDRReplayed',False),('FinishedAt',0),
++                          ('Ticket',TICKET+b'bad'),('Image',b'bad')]:
++            obj=pair();obj[key]=value
++            with self.subTest(key=key):self.assertEqual(dispatch(obj),(-1,[]))
++    def test_minimum_wait(self):
++        for now in [0,99,100,109]:self.assertEqual(dispatch(pair(),now=now),(-1,[]))
++    def test_boolean_markers_must_be_boolean(self):
++        for key in ['RestoreFinished','FDRReplayed']:
++            for value in ['true',1,b'true']:
++                obj=pair();obj[key]=value
++                self.assertEqual(dispatch(obj),(-1,[]))
++    def test_component_order_and_ticket(self):
++        obj=pair()
++        for payload in [image('krnl')+image('osrd')+image('dtre')+image('sepi'),
++                        image('osrd',TICKET+b'other')+image('krnl')+image('dtre')+image('sepi'),
++                        obj['Image']+b'padding', b'2GMI'+obj['Image']]:
++            bad=dict(obj,Image=payload);self.assertEqual(dispatch(bad),(-1,[]))
++    def test_truncated_der(self):
++        obj=pair()
++        for length in range(len(obj['Image'])):
++            bad=dict(obj,Image=obj['Image'][:length]);self.assertEqual(dispatch(bad),(-1,[]))
++    def test_invalid_der_lengths(self):
++        for data in [b'\x30\x80',b'\x30\xff',b'\x30\x84\xff\xff\xff\xff',b'\x30\x81\x01x']:
++            self.assertEqual(dispatch(dict(pair(),Image=data)),(-1,[]))
++
++class PrivateFiles(unittest.TestCase):
++    def setUp(self):
++        self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)
++        self.fd=lib.t1_private_open(os.fsencode(self.path));self.assertGreaterEqual(self.fd,0)
++    def tearDown(self):os.close(self.fd);self.tmp.cleanup()
++    def write(self,name,data=b'synthetic'):
++        return lib.t1_atomic_write(self.fd,os.fsencode(name),data,len(data))
++    def test_permissions_and_atomic_replacement(self):
++        self.assertEqual(self.write('FDRData'),0)
++        self.assertEqual((self.path/'FDRData').stat().st_mode&0o777,0o600)
++        self.assertEqual(self.write('FDRData',b'new'),0)
++        self.assertEqual((self.path/'FDRData').read_bytes(),b'new')
++        self.assertEqual([p.name for p in self.path.iterdir()],['FDRData'])
++    def test_reject_symlink_hardlink_fifo_and_traversal(self):
++        (self.path/'link').symlink_to('missing')
++        self.assertEqual(self.write('link'),-1)
++        self.write('original');os.link(self.path/'original',self.path/'hard')
++        self.assertEqual(self.write('hard'),-1)
++        os.mkfifo(self.path/'fifo',0o600);self.assertEqual(self.write('fifo'),-1)
++        for name in ['../outside','/tmp/out','.', '..','']:
++            self.assertEqual(self.write(name),-1)
++    def test_read_rejects_public_or_special_files(self):
++        self.write('data');(self.path/'data').chmod(0o644)
++        (self.path/'symlink').symlink_to('data');os.mkfifo(self.path/'fifo',0o600)
++        for name in ['data','symlink','fifo','missing']:
++            buf=C.c_void_p();n=C.c_size_t()
++            self.assertEqual(lib.t1_read_private(self.fd,name.encode(),C.byref(buf),C.byref(n)),-1)
++    def test_reject_public_directory_and_symlink_ancestor(self):
++        os.chmod(self.path,0o755)
++        self.assertEqual(lib.t1_private_open(os.fsencode(self.path)),-1)
++        os.chmod(self.path,0o700)
++        (self.path/'real').mkdir(mode=0o700);(self.path/'alias').symlink_to('real')
++        self.assertEqual(lib.t1_private_open(os.fsencode(self.path/'alias')),-1)
++    def test_fdr_commit_store_only(self):
++        msg={'MsgType':'DataRequestMsg','DataType':'FDRMemoryCommit','Arguments':{'FDRMemoryStore':{'synthetic':b'value'}}}
++        with Plist(msg) as p:self.assertEqual(lib.t1_fdr_commit(self.fd,p),0)
++        self.assertEqual(plistlib.loads((self.path/'FDRData').read_bytes()),{'synthetic':b'value'})
++    def test_unknown_or_ambiguous_fdr_not_saved(self):
++        for msg in [{},{'Arguments':{}},{'FDRMemoryStore':{}},{'FDRMemoryStore':b'bad'},
++                    {'FDRMemoryStore':{'a':1},'Arguments':{'FDRMemoryStoreData':{'b':2}}}]:
++            with Plist(msg) as p:self.assertEqual(lib.t1_fdr_commit(self.fd,p),-1)
++        self.assertFalse((self.path/'FDRData').exists())
++
++class CommandLine(unittest.TestCase):
++    def setUp(self):
++        self.tmp=tempfile.TemporaryDirectory();self.path=Path(self.tmp.name)
++        required=['iBEC','LLB','iBoot','OSRamdisk','KernelCache','DeviceTree','SEP',
++                  'RestoreRamDisk','RestoreKernelCache','RestoreDeviceTree','RestoreSEP']
++        manifest={k:{'Info':{'Path':k+'.im4p'}} for k in required}
++        for key in required:(self.path/(key+'.im4p')).write_bytes(b'synthetic fixture')
++        identity={'ApChipID':'0x8002','ApBoardID':'0x12','Info':{'DeviceClass':'x619ap','Variant':'Customer Boot'},'Manifest':manifest}
++        (self.path/'BuildManifest.plist').write_bytes(plistlib.dumps({'ProductVersion':'3.0','ProductBuildVersion':'14Y901','BuildIdentities':[identity]}))
++    def tearDown(self):self.tmp.cleanup()
++    def run_cli(self,options=(),variables=None):
++        env={k:v for k,v in os.environ.items() if not k.startswith('IDEVICERESTORE_')}
++        env.update(LD_LIBRARY_PATH=str(PREFIX/'lib'),IDEVICERESTORE_T1_MODE='inspect')
++        env.update(variables or {})
++        result=subprocess.run([str(ROOT/'src/idevicerestore'),*options,str(self.path)],
++                 cwd=self.path,env=env,capture_output=True,text=True,timeout=10)
++        self.assertFalse(list(self.path.glob('*.log')))
++        return result
++    def test_inspect_compiled_binary(self):
++        result=self.run_cli();self.assertEqual(result.returncode,0,result.stderr)
++        self.assertIn('offline inspection passed',result.stdout)
++    def test_reject_missing_component(self):
++        (self.path/'SEP.im4p').unlink()
++        self.assertNotEqual(self.run_cli().returncode,0)
++    def test_reject_generic_restore_flags(self):
++        for flag in ['--erase','--debug','--ignore-errors','--keep-pers']:
++            with self.subTest(flag=flag):self.assertNotEqual(self.run_cli([flag]).returncode,0)
++    def test_reject_legacy_and_misspelled_controls(self):
++        for variables in [{'IDEVICERESTORE_T1_EMBEDDEDOS':'1'},
++                          {'IDEVICERESTORE_T1_MODE':'wrong'},
++                          {'IDEVICERESTORE_T1_PHASE14':'1'},
++                          {'IDEVICERESTORE_MEMBOOT_FILE':'dummy'}]:
++            self.assertNotEqual(self.run_cli(variables=variables).returncode,0)
++
++if __name__=='__main__':unittest.main(verbosity=2)
+-- 
+2.55.0
+

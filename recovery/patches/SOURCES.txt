@@ -1,0 +1,66 @@
+libirecovery
+  base: 95dec3aa25b1e30654ca107eb971971f6a216520
+  commit: ae184997117cc8946a5fde5fbffabc9179db9e03
+  patch: 0001-libirecovery-t1.patch
+  sha256: 1c7e44d845861e7bb8ba8c359b9051a7fb41b323d6320f7adccbd7afd902c204
+
+usbmuxd
+  base: 3ded00c9985a5108cfc7591a309f9a23d57a8cba
+  commit: 5c9c60d8ecbbecc15993d0f548fa540b4b4647f4
+  patch: 0002-usbmuxd-t1.patch
+  sha256: 429e9de7773e37312976ccd6764952f6c6d366de6dbe056546b099793aab8ee8
+
+idevicerestore
+  base: 60192e97f87d1bbab5c493684e0a245b0966363f
+  commit: ce34d3c7e33602ebfa9294f6466ea27b67ee73cc
+  patch: 0003-idevicerestore-t1.patch
+  sha256: 4a392a3e7e5b707559cfcad89586a7affe3798c32531de6d4ad9c65684cb8d15
+
+libtatsu
+  upstream: https://github.com/libimobiledevice/libtatsu.git
+  base: e7d6ad13ef928aa609d0ccdfc586f7d6e8e049bf
+  commit: 381b469ddce72f5179189618ac6e19f48f0d7a54
+  patch: 0004-libtatsu-verified-https.patch
+  sha256: 1062f9714b8c4f6e7e7f9a30b7c4159019fc8335b40c31ba623e91ba3a36c65d
+
+idevicerestore (follow-up)
+  upstream: https://github.com/libimobiledevice/idevicerestore.git
+  base: ce34d3c7e33602ebfa9294f6466ea27b67ee73cc
+  commit: 34f95d81f027ad5d2686430799b77f26da18c507
+  patch: 0005-idevicerestore-preflight.patch
+  sha256: 73bf622f19a24046ba92b777bc479e4509e30cf950ec75a4b219c455fcdf5257
+
+acpi_call
+  upstream: https://github.com/nix-community/acpi_call.git
+  base: 6ad1e676dbfb5dcb1ec1f973c10ef5c57ffb4069
+  commit: 9d6069aabebac0d07250609c9d6e1faa697ae022
+  patch: 0006-acpi-call-void-return.patch
+  sha256: 7d8567de301bb58f2e62f4cb5d0bb3f6e3dde9fd04f31417002694c99e114e2d
+
+libtatsu (follow-up)
+  upstream: https://github.com/libimobiledevice/libtatsu.git
+  base: 381b469ddce72f5179189618ac6e19f48f0d7a54
+  commit: 68c647dc5c99f2c0cb3c1375bd046a841c7392ec
+  patch: 0007-libtatsu-apple-root-ca.patch
+  sha256: 6755b68218fdcec2ecf508b65e56473097a11bf4d3758c682f128375df94193f
+
+idevicerestore (follow-up)
+  upstream: https://github.com/libimobiledevice/idevicerestore.git
+  base: 34f95d81f027ad5d2686430799b77f26da18c507
+  commit: 2e1e606fd1599c4eecca40f69885a663f64acbcf
+  patch: 0008-idevicerestore-live-preflight.patch
+  sha256: 28582b4724f5ccd805d8e60f863987b0f62be9d06eec915115b407bc17368511
+
+idevicerestore (follow-up)
+  upstream: https://github.com/libimobiledevice/idevicerestore.git
+  base: 2e1e606fd1599c4eecca40f69885a663f64acbcf
+  commit: f51b883aac1acb59d8eb333160988b5dcbf37d62
+  patch: 0009-idevicerestore-boot-probes.patch
+  sha256: 7d5c8bfc220954f1887b2f846337ad05d1b2a3fff0fe019719297cb77e2fa533
+
+idevicerestore (live activation)
+  upstream: https://github.com/libimobiledevice/idevicerestore.git
+  base: f51b883aac1acb59d8eb333160988b5dcbf37d62
+  commit: 353a454786dd1ac5410f11f68fcf466aa7ab030b
+  patch: 0010-idevicerestore-live-activation.patch
+  sha256: e7be6f47b47071d38d393eff5eff08e1eb643634b1a46a16eb261e3f460c2732

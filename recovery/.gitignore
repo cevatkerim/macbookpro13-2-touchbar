@@ -1,0 +1,13 @@
+download/
+firmware/
+firmware-manifests/
+prefix/
+src/
+private/
+backups/
+*.plist
+*.memboot
+*.apticket
+*.pkg
+*.dmg
+FDRData*

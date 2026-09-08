@@ -1,0 +1,24 @@
+From ae184997117cc8946a5fde5fbffabc9179db9e03 Mon Sep 17 00:00:00 2001
+From: Kerim Incedayi <k@kerim.me>
+Date: Tue, 8 Sep 2026 11:33:42 +0200
+Subject: [PATCH] Recognize x619ap Apple T1 recovery identity
+
+---
+ src/libirecovery.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/libirecovery.c b/src/libirecovery.c
+index fc11d88..5f38dd7 100644
+--- a/src/libirecovery.c
++++ b/src/libirecovery.c
+@@ -371,6 +371,7 @@ static struct irecv_device irecv_devices[] = {
+ 	/* Apple Watch */
+ 	{ "Watch1,1",    "n27aap",   0x02, 0x7002, "Apple Watch 38mm (1st gen)" },
+ 	{ "Watch1,2",    "n28aap",   0x04, 0x7002, "Apple Watch 42mm (1st gen)" },
++	{ "iBridge1,1",  "x619ap",  0x12, 0x8002, "Apple T1 (MacBookPro13,2)" },
+ 	{ "Watch2,6",    "n27dap",  0x02, 0x8002, "Apple Watch Series 1 (38mm)" },
+ 	{ "Watch2,7",    "n28dap",  0x04, 0x8002, "Apple Watch Series 1 (42mm)" },
+ 	{ "Watch2,3",    "n74ap",   0x0C, 0x8002, "Apple Watch Series 2 (38mm)" },
+-- 
+2.55.0
+

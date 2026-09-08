@@ -1,0 +1,28 @@
+pkgname=macbookpro-t1-touchbar-dkms
+pkgver=0.1.20260908
+pkgrel=1
+pkgdesc='T1 iBridge Touch Bar driver tested on MacBookPro13,2 with Linux 7.1'
+arch=('x86_64')
+url='https://github.com/AJ-dev-i60/t1-touchbar'
+license=('GPL-2.0-only')
+depends=('dkms' 'linux-headers')
+conflicts=('apple-ib-drv-dkms' 'apple-ib-drv-dkms-git')
+options=('!strip' '!debug')
+_commit=20d65c7b0fe6d05ea9734f869b27384a62de5109
+source=("t1-touchbar-${_commit}.tar.gz::https://github.com/AJ-dev-i60/t1-touchbar/archive/${_commit}.tar.gz")
+sha256sums=('b0bdb61ab72582c22bdd79fd89ee57ee4aed7409d61e9fbf53d6c1b5494d8289')
+
+package() {
+  local driver="$srcdir/t1-touchbar-$_commit/apple-ib-drv"
+  install -d "$pkgdir/usr/src/apple-ib-drv-0.1"
+  install -m 644 "$driver/Makefile" "$driver/dkms.conf" "$driver/LICENSE" \
+    "$driver/apple-ibridge.c" "$driver/apple-ibridge.h" \
+    "$driver/apple-touchbar.c" "$driver/hid-ids.h" \
+    "$pkgdir/usr/src/apple-ib-drv-0.1/"
+  install -Dm644 "$driver/packaging/apple-touchbar.modprobe.conf" \
+    "$pkgdir/etc/modprobe.d/apple-touchbar.conf"
+  install -Dm644 "$driver/packaging/99-ibridge.rules" \
+    "$pkgdir/etc/udev/rules.d/99-ibridge.rules"
+  install -Dm644 "$driver/packaging/apple-touchbar.modules-load.conf" \
+    "$pkgdir/etc/modules-load.d/apple-touchbar.conf"
+}
