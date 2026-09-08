@@ -106,6 +106,10 @@ mask was removed before the fingerprint unlock test.
 
 ## Firmware startup after reboot
 
+For the later failure after repeated lock-screen scan timeouts, see the
+[experimental keybag relay recovery patch](integrations/keybag-relay/README.md).
+Its installation and validation status are recorded there.
+
 The first reboot returned T1 to recovery (`05ac:1281`). Staging the firmware
 under the external SSD's Apple EFI path was insufficient on this machine.
 Replaying the same completed production pair from Linux booted the T1 again;

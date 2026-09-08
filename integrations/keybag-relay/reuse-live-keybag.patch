@@ -1,0 +1,204 @@
+diff --git a/docs/architecture.md b/docs/architecture.md
+index fcc7008..9205f13 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -83,11 +83,14 @@ The required order is:
+    `CAP_NET_ADMIN`; the network-facing xART process does not retain it. The
+    device-scoped service reports readiness only after binding that listener,
+    then starts the keybag relay; device removal propagates a relay stop.
+-4. **Keybag relay.** after xART storage and NCM readiness, `sep-probe` restores
+-   the saved keybag state, observes the promoted bag, resolves its persisted
+-   protected-user binding, publishes first-unlock, initializes ACM, confirms
+-   the biometric keybag's final device state, and holds the notification
+-   relay. The service is pulled in by the ready xART instance rather than
++4. **Keybag relay.** after xART storage and NCM readiness, `sep-probe` checks
++   for the live biometric keybag. An existing unlocked bag must accept the saved
++   secret and pass a lock-state readback; it is not reloaded or re-promoted at
++   every authentication handoff. Only an explicit not-found response restores
++   the saved bag, observes the promoted bag, resolves its protected-user binding,
++   and publishes first-unlock. Both paths initialize ACM, confirm the final
++   biometric device state, and hold the notification relay. The service is pulled
++   in by the ready xART instance rather than
+    enabled independently; an execution condition rejects any start without an
+    active device-scoped xART instance, and its state-file condition keeps it
+    inactive before enrollment. Missing or unusable state does not block
+diff --git a/sep-probe/sep_keybag.c b/sep-probe/sep_keybag.c
+index f59b475..26647dc 100644
+--- a/sep-probe/sep_keybag.c
++++ b/sep-probe/sep_keybag.c
+@@ -1107,16 +1107,34 @@ static enum sep_operation_result keybag_relay_callback(
+ 		operation, &keystore, &timestamp, true);
+ 	if (result != SEP_OPERATION_OK)
+ 		goto out;
+-	relay->failure_stage = "load biometric keybag";
+-	result = create_or_load(
+-		operation, &keybag, &material, &keystore, &timestamp,
+-		&source_handle, stored);
++	/* Reuse a live bag across relay handoffs. Reloading and promoting the
++	 * persisted bag on every scan needlessly replaces device state. Prove
++	 * the existing bag accepts our saved secret before announcing readiness.
++	 * Only an explicit not-found result permits the cold restore path. */
++	relay->failure_stage = "inspect existing biometric keybag";
++	result = query_device_state(operation, &keystore, &timestamp,
++		SEP_KEYBAG_BIOMETRIC_HANDLE, true, &biometric_keybag_absent);
+ 	if (result != SEP_OPERATION_OK)
+ 		goto out;
+-	relay->failure_stage = "activate biometric keybag";
+-	result = activate_and_validate(
+-		operation, &keystore, &timestamp, source_handle, material.secret,
+-		false);
++	if (biometric_keybag_absent) {
++		relay->failure_stage = "load biometric keybag";
++		result = create_or_load(
++			operation, &keybag, &material, &keystore, &timestamp,
++			&source_handle, stored);
++		if (result != SEP_OPERATION_OK)
++			goto out;
++		relay->failure_stage = "activate biometric keybag";
++		result = activate_and_validate(
++			operation, &keystore, &timestamp, source_handle,
++			material.secret, false);
++	} else {
++		relay->failure_stage = "validate existing biometric keybag";
++		result = unlock_keybag(operation, &keystore, &timestamp,
++			SEP_KEYBAG_BIOMETRIC_HANDLE, material.secret);
++		if (result == SEP_OPERATION_OK)
++			result = inspect_lock_state(operation, &keystore, &timestamp,
++				SEP_KEYBAG_BIOMETRIC_HANDLE, true);
++	}
+ 	if (result == SEP_OPERATION_OK) {
+ 		relay->failure_stage = "initialize ACM";
+ 		result = acm_exchange(
+diff --git a/sep-probe/test_sep_operation.c b/sep-probe/test_sep_operation.c
+index e7f4f3a..f4f4d4e 100644
+--- a/sep-probe/test_sep_operation.c
++++ b/sep-probe/test_sep_operation.c
+@@ -99,6 +99,8 @@ struct fake_operation {
+ 	int default_system_keybag_bad_state;
+ 	int biometric_keybag_missing;
+ 	int biometric_keybag_bad_state;
++	int reject_biometric_unlock;
++	int validate_biometric_unlock;
+ 	uint8_t expected_persistent_secret[SEP_KEYSTORE_SECRET_SIZE];
+ 	uint8_t authorization_events[16];
+ 	unsigned int authorization_event_count;
+@@ -564,6 +566,7 @@ static enum sep_urb_status fake_exchange(void *context,
+ 				fake->default_system_keybag_present = 1;
+ 			} else {
+ 				EXPECT(target == SEP_KEYBAG_BIOMETRIC_HANDLE);
++				fake->biometric_keybag_missing = 0;
+ 				if (fake->keystore_selectors[fake->keystore_calls - 2U] ==
+ 				    SEP_KEYSTORE_SELECTOR_CREATE) {
+ 					EXPECT(load_u32_le(output + IPC_LENGTH_OFFSET) ==
+@@ -597,6 +600,14 @@ static enum sep_urb_status fake_exchange(void *context,
+ 					       output + 0x74U,
+ 					       fake->created_keybag_secret,
+ 					       sizeof(fake->created_keybag_secret)) == 0);
++			if (handle == SEP_KEYBAG_BIOMETRIC_HANDLE &&
++			    fake->validate_biometric_unlock)
++				EXPECT(memcmp(output + 0x74U,
++					      fake->expected_persistent_secret,
++					      SEP_KEYSTORE_SECRET_SIZE) == 0);
++			if (handle == SEP_KEYBAG_BIOMETRIC_HANDLE &&
++			    fake->reject_biometric_unlock)
++				inner_result = -7;
+ 			store_u64_le(typed, 11);
+ 			store_u64_le(typed + sizeof(uint64_t), 12);
+ 			typed_length = 2U * sizeof(uint64_t);
+@@ -1186,10 +1197,7 @@ static int relay_ready(void *context)
+ 		SEP_KEYSTORE_SELECTOR_SET_ENVIRONMENT,
+ 		SEP_KEYSTORE_SELECTOR_DEVICE_STATE,
+ 		SEP_KEYSTORE_SELECTOR_DEVICE_STATE,
+-		SEP_KEYSTORE_SELECTOR_LOAD,
+-		SEP_KEYSTORE_SELECTOR_MAKE_SYSTEM,
+-		SEP_KEYSTORE_SELECTOR_LOCK_STATE,
+-		SEP_KEYSTORE_SELECTOR_GET_CONFIGURATION,
++		SEP_KEYSTORE_SELECTOR_DEVICE_STATE,
+ 		SEP_KEYSTORE_SELECTOR_UNLOCK,
+ 		SEP_KEYSTORE_SELECTOR_LOCK_STATE,
+ 		SEP_KEYSTORE_SELECTOR_DEVICE_STATE,
+@@ -1226,12 +1234,15 @@ static enum sep_operation_result run_relay_fake(
+ 	ready->fake = fake;
+ 	ready->store = store;
+ 	fake->keybag_authorization = 1;
++	fake->validate_biometric_unlock = 1;
++	memcpy(fake->expected_persistent_secret, store->loaded.secret,
++	       sizeof(fake->expected_persistent_secret));
+ 	return sep_keybag_run_notification_relay_with_ops(
+ 		&operation_ops, &store_ops, 1000, 25, fake_cancelled, fake,
+ 		relay_ready, ready);
+ }
+ 
+-static void test_shared_relay_loads_without_rewrite_and_drains(void)
++static void test_shared_relay_reuses_without_rewrite_and_drains(void)
+ {
+ 	struct fake_operation fake = make_fake();
+ 	struct fake_keybag_store store = {
+@@ -1317,7 +1328,7 @@ static void test_shared_relay_fails_before_ready_on_state_or_protocol(void)
+ 	memset(store.loaded.secret, 0x5a, sizeof(store.loaded.secret));
+ 	store.loaded.blob[0] = 1;
+ 	store.loaded.blob_length = 1;
+-	/* Existing relay: env, two boot-state reads, load, promote, pre-unlock read. */
++	/* Warm relay: env, three state reads, unlock, validate lock state. */
+ 	fake.malformed_lock_state_call = 6;
+ 	EXPECT(run_relay_fake(&fake, &store, &ready) ==
+ 	       SEP_OPERATION_ERROR_SESSION);
+@@ -1342,6 +1353,32 @@ static void test_shared_relay_fails_before_ready_on_state_or_protocol(void)
+ 	sep_keystore_clear(&store, sizeof(store));
+ }
+ 
++static void test_shared_relay_rejects_invalid_live_bag_without_reload(void)
++{
++	for (unsigned int failure = 0; failure < 2; ++failure) {
++		struct fake_operation fake = make_fake();
++		struct fake_keybag_store store = {
++			.load_result = SEP_KEYBAG_STORE_EXISTING,
++		};
++		struct relay_callback_state ready = { 0 };
++
++		memset(store.loaded.secret, 0x5a, sizeof(store.loaded.secret));
++		store.loaded.blob[0] = 1;
++		store.loaded.blob_length = 1;
++		fake.reject_biometric_unlock = failure == 0;
++		fake.biometric_keybag_bad_state = failure == 1;
++		EXPECT(run_relay_fake(&fake, &store, &ready) ==
++		       (failure == 0 ? SEP_OPERATION_REMOTE_ERROR :
++				       SEP_OPERATION_ERROR_KEYBAG));
++		EXPECT(ready.calls == 0 && fake.receive_calls == 0 &&
++		       store.persist_calls == 0 && fake.destroy_calls == 1);
++		for (unsigned int i = 0; i < fake.keystore_calls; ++i)
++			EXPECT(fake.keystore_selectors[i] != SEP_KEYSTORE_SELECTOR_LOAD &&
++			       fake.keystore_selectors[i] != SEP_KEYSTORE_SELECTOR_MAKE_SYSTEM);
++		sep_keystore_clear(&store, sizeof(store));
++	}
++}
++
+ static void test_kernel_shared_lock_excludes_exclusive_owner(void)
+ {
+ 	char path[] = "/tmp/t1bridge-sep-lock-XXXXXX";
+@@ -1421,6 +1458,7 @@ static void test_shared_relay_initializes_device_and_literal_default(void)
+ 		SEP_KEYSTORE_SELECTOR_UNLOCK,
+ 		SEP_KEYSTORE_SELECTOR_LOCK_STATE,
+ 		SEP_KEYSTORE_SELECTOR_DEVICE_STATE,
++		SEP_KEYSTORE_SELECTOR_DEVICE_STATE,
+ 		SEP_KEYSTORE_SELECTOR_LOAD,
+ 		SEP_KEYSTORE_SELECTOR_MAKE_SYSTEM,
+ 		SEP_KEYSTORE_SELECTOR_LOCK_STATE,
+@@ -1434,6 +1472,7 @@ static void test_shared_relay_initializes_device_and_literal_default(void)
+ 		.expected_selector_count = sizeof(expected_selectors),
+ 	};
+ 
++	fake.biometric_keybag_missing = 1;
+ 	fake.device_keybag_present = 0;
+ 	fake.default_system_keybag_present = 0;
+ 	fake.cancel_after_receive = 1;
+@@ -2040,7 +2079,8 @@ static void test_operation_budget_can_span_multiple_transfer_ceilings(void)
+ int main(void)
+ {
+ 	test_kernel_shared_lock_excludes_exclusive_owner();
+-	test_shared_relay_loads_without_rewrite_and_drains();
++	test_shared_relay_reuses_without_rewrite_and_drains();
++	test_shared_relay_rejects_invalid_live_bag_without_reload();
+ 	test_shared_relay_fails_before_ready_on_state_or_protocol();
+ 	test_create_if_absent_rejects_existing_before_usb();
+ 	test_shared_relay_initializes_device_and_literal_default();
