@@ -17,6 +17,8 @@ and an Arch/DKMS package definition for the existing community Touch Bar driver.
   EmbeddedOS already boots. Includes automatic loading and kernel updates.
 - [FaceTime camera verification](camera.md): built-in UVC support, tested capture
   settings and OBS setup after T1 activation.
+- [Touch ID trial](touchid.md): T1Bridge packages staged for reboot; enrollment
+  and the new driver stack are not yet verified on this machine.
 - [Full activation procedure](recovery/docs/activation.md): the tested recovery,
   FDR creation/replay, production boot, verification and EFI staging sequence.
 - [Results and limitations](recovery/README.md): live evidence and persistence status.
