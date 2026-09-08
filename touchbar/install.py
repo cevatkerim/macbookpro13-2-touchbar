@@ -23,10 +23,12 @@ def main():
     directory=home/'.local/share/omarchy-touchbar'
     launcher=directory/'launch'
     selection=config/'renderer'
+    desktop=home/'.local/share/applications/me.kerim.OmarchyTouchBar.desktop'
     backup=config/'renderer.before-omarchy-touchbar'
     owned=selection.is_symlink() and selection.resolve()==launcher.resolve()
     if args.disable:
         if owned:
+            desktop.unlink(missing_ok=True)
             selection.unlink()
             if backup.exists() or backup.is_symlink():
                 backup.rename(selection)
@@ -51,6 +53,13 @@ def main():
         config.mkdir(parents=True,exist_ok=True)
         if not owned:
             selection.symlink_to(launcher)
+        desktop.parent.mkdir(parents=True,exist_ok=True)
+        desktop.write_text('[Desktop Entry]\nType=Application\nName=Omarchy Touch Bar\n'
+                           'Comment=Return to the custom sliders and Omarchy controls\n'
+                           'Exec=/usr/bin/systemctl --user restart t1-touchbar.service\n'
+                           'Icon=input-keyboard-symbolic\nTerminal=false\nCategories=Settings;HardwareSettings;\n')
+        if shutil.which('update-desktop-database'):
+            subprocess.run(['update-desktop-database',str(desktop.parent)],check=True)
     if not args.no_restart:
         subprocess.run(['systemctl','--user','restart','t1-touchbar.service'],check=True)
     print('Previous renderer restored.' if args.disable else 'Omarchy Touch Bar selected. Tap Default to fall back; restart the user service to return.')

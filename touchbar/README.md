@@ -58,7 +58,8 @@ existing services start successfully. [This machine's automatic firmware
 startup still needs its separate reboot test](../touchid.md#firmware-startup-after-reboot).
 After updating the repository, rerun the installer to update installed files.
 
-To return after tapping Default:
+To return after tapping Default, open **Omarchy Touch Bar** from the application
+launcher. The installer adds this shortcut. From a terminal, the equivalent is:
 
 ```sh
 systemctl --user restart t1-touchbar.service
