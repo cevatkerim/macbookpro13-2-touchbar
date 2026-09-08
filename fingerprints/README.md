@@ -85,8 +85,9 @@ were checked on this MacBookPro13,2. Two live verification/cancellation cycles
 completed Start → Stop → Release, retaining the existing enrollment. The desktop
 entry passed validation and Hyprland reported no config errors.
 
-Matching through the new panel and adding/removing a second finger still need
-the owner's live UI test. The existing saved finger was not deleted for tests.
+The owner subsequently confirmed that the panel works nicely. Individual live
+add/remove results were not separately recorded; the existing saved finger was
+not deleted for automated tests.
 
 ## Remove the panel
 

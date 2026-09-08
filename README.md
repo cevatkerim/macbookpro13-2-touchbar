@@ -22,6 +22,8 @@ T1Bridge Touch ID setup.
   settings and OBS setup after T1 activation.
 - [Touch ID setup and results](touchid.md): verified enrollment and matching,
   T1Bridge migration, desktop controls and saved-firmware startup.
+- [Custom Omarchy Touch Bar](touchbar/README.md): expandable sliders, workspace
+  selection, screenshots, notifications and the Omarchy launcher icon.
 - [Fingerprints panel](fingerprints/README.md): a small desktop UI to add,
   verify and remove individual fingers, with persistent Omarchy integration.
 - [Full activation procedure](recovery/docs/activation.md): the tested recovery,
