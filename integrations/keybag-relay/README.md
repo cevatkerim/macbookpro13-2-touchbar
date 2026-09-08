@@ -21,8 +21,11 @@ restarts, a real right-index-finger match, and sixteen consecutive ten-second
 scans cancelled through fprintd all passed. Every cancellation recovered the
 relay within five seconds; fprintd reported no errors during that final run.
 The Touch Bar authentication prompt was also visible. Restart tests use normal
-intervals to respect systemd's start limit. Lock-screen matching is pending the
-owner's live confirmation; cold boot and suspend/resume remain untested.
+intervals to respect systemd's start limit. A subsequent 51-second lock session
+completed five fingerprint PAM sessions, recorded successful authentication,
+and unlocked without starting a password PAM session. A capture of the live
+Touch Bar frame confirmed the normal controls returned. Cold boot and
+suspend/resume remain untested.
 
 Local checks: Rust formatting, Clippy, workspace tests, native tests and
 sanitizers, kernel builds and packaging checks passed. The complete
