@@ -86,8 +86,12 @@ Use `--no-menu --no-window-rule` on other desktops or when managing those
 integrations yourself. A conflicting custom menu item is not overwritten.
 
 The selection persists across logins and reboot, provided T1 firmware and its
-existing services start successfully. [This machine's automatic firmware
-startup still needs its separate reboot test](../touchid.md#firmware-startup-after-reboot).
+existing services start successfully. At startup the custom renderer waits up
+to two minutes for a missing or not-yet-listening hardware socket. This prevents
+an early desktop login from triggering the stock renderer before firmware
+startup finishes. Permission, peer-identity and protocol errors still fail
+immediately; an expired readiness wait permits the normal stock fallback.
+See [firmware startup validation](../touchid.md#firmware-startup-after-reboot).
 After updating the repository, rerun the installer to update installed files.
 
 The application launcher now opens settings. Use its **Custom Touch Bar** switch
@@ -130,7 +134,7 @@ interpolation or arbitrary-command configuration.
 
 On this MacBookPro13,2, the first 12-second live trial negotiated the display,
 submitted frames, exited successfully and restarted the stock renderer. The
-installed custom renderer then started successfully. Twenty-three automated tests
+installed custom renderer then started successfully. Twenty-seven automated tests
 cover touch transitions, slider clamping, context changes, function keys,
 workspace selection, packet validation, cancellation races, lock gating,
 preference validation, shortcut ordering/visibility and renderer selection
@@ -138,8 +142,12 @@ round trips. The owner confirmed that the controls work and subsequently
 confirmed the settings panel's switching and customization behavior. A live
 framebuffer capture exposed overlapping brightness/keyboard labels; measuring
 text width fixed the spacing, and the slider track was shortened to about 575
-native pixels. Suspend/resume and reboot behavior are not established by these
-live tests.
+native pixels. A later reboot confirmed firmware startup but exposed an early
+custom-renderer exit before its socket existed. The readiness fix passed tests
+for delayed availability, timeout, cancellation and non-retryable failures, plus
+a live trial that simulated missing hardware before connecting and rendering on
+the real display. A further reboot of this renderer fix and suspend/resume are
+still untested.
 
 The workspace page contains workspaces 1–10. The panel customizes the supported
 shortcut set; app-specific layouts and arbitrary new actions are not implemented.

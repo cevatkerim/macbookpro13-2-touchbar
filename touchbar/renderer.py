@@ -11,7 +11,7 @@ import time
 
 from drawing import render
 from layout import Layout
-from protocol import Hardware
+from protocol import connect_when_ready
 from preferences import Preferences
 
 
@@ -69,7 +69,9 @@ def main():
     signal.signal(signal.SIGINT,stop)
     hardware, desktop = None, None
     try:
-        hardware = Hardware()
+        hardware = connect_when_ready(lambda: running)
+        if hardware is None:
+            return 0
         desktop = Desktop()
         print('Omarchy Touch Bar connected; default renderer resumes on exit.', flush=True)
         start = time.monotonic()

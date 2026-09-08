@@ -24,8 +24,9 @@ The Touch Bar authentication prompt was also visible. Restart tests use normal
 intervals to respect systemd's start limit. A subsequent 51-second lock session
 completed five fingerprint PAM sessions, recorded successful authentication,
 and unlocked without starting a password PAM session. A capture of the live
-Touch Bar frame confirmed the normal controls returned. Cold boot and
-suspend/resume remain untested.
+Touch Bar frame confirmed the normal controls returned. After a subsequent
+reboot, the patched keybag service was active and the owner reported Touch ID
+working. Suspend/resume remains untested.
 
 Local checks: Rust formatting, Clippy, workspace tests, native tests and
 sanitizers, kernel builds and packaging checks passed. The complete

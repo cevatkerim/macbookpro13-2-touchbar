@@ -126,9 +126,12 @@ sign, provision, reset the USB device, switch a running configuration, or enroll
 The installed executable and its two local shared libraries are root-owned under
 `/usr/local/libexec/t1-firmware`; firmware resources stay under the private state
 directory. The service cannot access the network or user home. It is enabled
-and its already-running-device path passed. **Automatic saved-image startup and
-fingerprint restoration across the next reboot still need a live test.** A user
-service retry drop-in lets the renderer wait for firmware startup.
+and its already-running-device path passed. On the next reboot, the saved-image
+startup and keybag services both completed successfully, and the owner reported
+working hardware and Touch ID. The custom renderer initially fell back to stock
+because its socket was not ready; its subsequent
+[startup readiness fix](touchbar/README.md) has a separate pending reboot test.
+A user service retry drop-in also restarts a failed launcher.
 
 The private-link UFW exception is restricted to the observed T1 interface,
 verified USB driver/device identity and expected link-local peer, TCP 61500.

@@ -1,5 +1,6 @@
 """Unprivileged client for T1Bridge's documented hardware IPC v1."""
 import array
+import errno
 import fcntl
 import mmap
 import os
@@ -11,6 +12,26 @@ import time
 
 HEADER = struct.Struct('<4sHHII')
 SOCKET = '/run/t1bridge/touchbar.sock'
+
+
+def connect_when_ready(keep_running, timeout=120):
+    """Wait for boot-time socket availability, keeping normal validation strict."""
+    deadline = time.monotonic() + timeout
+    announced = False
+    while keep_running():
+        try:
+            return Hardware()
+        except OSError as error:
+            # Hardware() closes partial connections before propagating errors.
+            # Do not retry permission, trust, protocol or negotiation failures.
+            remaining = deadline - time.monotonic()
+            if error.errno not in (errno.ENOENT, errno.ECONNREFUSED) or remaining <= 0:
+                raise
+            if not announced:
+                print('Waiting for T1Bridge Touch Bar hardware…', flush=True)
+                announced = True
+            time.sleep(min(0.5, remaining))
+    return None
 
 
 def packet(kind, request, payload=b''):
