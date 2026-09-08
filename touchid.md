@@ -84,6 +84,10 @@ Environment=T1BRIDGE_DESKTOP_PROVIDER=/usr/local/libexec/t1bridge-omarchy-deskto
 
 ## Authentication integration
 
+The [Fingerprints panel](fingerprints/README.md) provides enrollment management
+through the existing service. Its launcher and Omarchy menu entry persist across
+reboot. It does not change the authentication setup described below.
+
 The sudo and polkit trial adds the existing faillock precheck, Omarchy's
 closed-lid gate and `pam_fprintd.so maxtries=3 timeout=10`, preserving the
 original password and account includes. The lock screen uses its separate
